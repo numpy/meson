@@ -31,6 +31,13 @@ if T.TYPE_CHECKING:
     from ..environment import Environment
     from ..envconfig import MachineInfo
 
+import sys
+if sys.version_info[:2] == (3, 13):
+    from importlib.resources import files
+    def read_text(package: Union[module, str], resource: str, encoding: str = 'utf-8', errors: str = 'strict'):
+       return (files(package) / resource).read_text(encoding)
+    importlib.resources.read_text = read_text
+
 class CMakeInfo(T.NamedTuple):
     module_paths: T.List[str]
     cmake_root: str
