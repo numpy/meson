@@ -23,7 +23,8 @@ import typing as T
 
 from .. import mlog
 from .. import mesonlib
-from ..mesonlib import MachineChoice, OptionKey
+from ..mesonlib import MachineChoice
+from ..options import OptionKey
 
 from .base import DependencyMethods, SystemDependency
 from .cmake import CMakeDependency

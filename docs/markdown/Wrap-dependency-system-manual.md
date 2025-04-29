@@ -297,6 +297,9 @@ fallback to use the subproject, assuming it uses
 
 ### CMake wraps
 
+**Note**: This is experimental and has no backwards or forwards compatibility guarantees.
+See [Meson's rules on mixing build systems](Mixing-build-systems.md).
+
 Since the CMake module does not know the public name of the provided
 dependencies, a CMake `.wrap` file cannot use the `dependency_names = foo`
 syntax. Instead, the `dep_name = <target_name>_dep` syntax should be used, where
@@ -316,6 +319,9 @@ foo-bar-1.0 = foo_bar_dep
 ```
 ### Cargo wraps
 
+**Note**: This is experimental and has no backwards or forwards compatibility guarantees.
+See [Meson's rules on mixing build systems](Mixing-build-systems.md).
+
 Cargo subprojects automatically override the `<package_name>-<version>-rs` dependency
 name:
 - `package_name` is defined in `[package] name = ...` section of the `Cargo.toml`.
@@ -323,7 +329,7 @@ name:
   * `x.y.z` -> 'x'
   * `0.x.y` -> '0.x'
   * `0.0.x` -> '0'
-  It allows to make different dependencies for uncompatible versions of the same
+  It allows to make different dependencies for incompatible versions of the same
   crate.
 - `-rs` suffix is added to distinguish from regular system dependencies, for
   example `gstreamer-1.0` is a system pkg-config dependency and `gstreamer-0.22-rs`
@@ -359,7 +365,7 @@ the main project depends on `foo-1-rs` and `bar-1-rs`, and they both depend on
 configure `common-rs` with a set of features. Later, when `bar-1-rs` does a lookup
 for `common-1-rs` it has already been configured and the set of features cannot be
 changed. If `bar-1-rs` wants extra features from `common-1-rs`, Meson will error out.
-It is currently the responsability of the main project to resolve those
+It is currently the responsibility of the main project to resolve those
 issues by enabling extra features on each subproject:
 ```meson
 project(...,
@@ -379,7 +385,7 @@ Some naming conventions need to be respected:
 
 Since *1.5.0* Cargo wraps can also be provided with `Cargo.lock` file at the root
 of (sub)project source tree. Meson will automatically load that file and convert
-it into a serie of wraps definitions.
+it into a series of wraps definitions.
 
 ## Using wrapped projects
 

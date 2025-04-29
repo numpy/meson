@@ -5,7 +5,7 @@ set -e
 source /ci/common.sh
 
 pkgs=(
-  python3-pip python3 python3-devel
+  python3-pip python3 python3-devel python3-setuptools
   ninja make git autoconf automake patch libjpeg-devel
   elfutils gcc gcc-c++ gcc-fortran gcc-objc gcc-obj-c++ vala rust bison flex curl lcov
   mono-core gtkmm3-devel gtest gmock protobuf-devel wxGTK3-3_2-devel gobject-introspection-devel
@@ -35,11 +35,14 @@ echo 'export PKG_CONFIG_PATH="/usr/lib64/mpi/gcc/openmpi3/lib64/pkgconfig:$PKG_C
 curl -fsS https://dlang.org/install.sh | bash -s dmd | tee dmd_out.txt
 cat dmd_out.txt | grep source | sed 's/^[^`]*`//g' | sed 's/`.*//g' >> /ci/env_vars.sh
 chmod +x /ci/env_vars.sh
+# Lower ulimit before running dub, otherwise there's a very high chance it will OOM.
+# See: https://github.com/dlang/phobos/pull/9048 and https://github.com/dlang/phobos/pull/8990
+echo 'ulimit -n -S 10000' >> /ci/env_vars.sh
 
 source /ci/env_vars.sh
 
 dub_fetch urld
-dub build urld --compiler=dmd
+dub build --deep urld --arch=x86_64 --compiler=dmd --build=debug
 dub_fetch dubtestproject
 dub build dubtestproject:test1 --compiler=dmd
 dub build dubtestproject:test2 --compiler=dmd

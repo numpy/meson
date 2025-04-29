@@ -68,7 +68,7 @@ class GnuStepDependency(ConfigToolDependency):
             ['--gui-libs' if 'gui' in self.modules else '--base-libs'],
             'link_args'))
 
-    def find_config(self, versions: T.Optional[T.List[str]] = None, returncode: int = 0) -> T.Tuple[T.Optional[T.List[str]], T.Optional[str]]:
+    def find_config(self, versions: T.Optional[T.List[str]] = None, returncode: int = 0, exclude_paths: T.Optional[T.List[str]] = None) -> T.Tuple[T.Optional[T.List[str]], T.Optional[str]]:
         tool = [self.tools[0]]
         try:
             p, out = Popen_safe(tool + ['--help'])[:2]
@@ -189,7 +189,7 @@ class VulkanDependencySystem(SystemDependency):
         super().__init__(name, environment, kwargs, language=language)
 
         try:
-            self.vulkan_sdk = os.environ['VULKAN_SDK']
+            self.vulkan_sdk = os.environ.get('VULKAN_SDK', os.environ['VK_SDK_PATH'])
             if not os.path.isabs(self.vulkan_sdk):
                 raise DependencyException('VULKAN_SDK must be an absolute path.')
         except KeyError:

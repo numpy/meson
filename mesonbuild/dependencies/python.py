@@ -17,6 +17,7 @@ from .framework import ExtraFrameworkDependency
 from .pkgconfig import PkgConfigDependency
 from ..environment import detect_cpu_family
 from ..programs import ExternalProgram
+from ..options import OptionKey
 
 if T.TYPE_CHECKING:
     from typing_extensions import TypedDict
@@ -234,7 +235,10 @@ class _PythonDependencyBase(_Base):
                     elif imp_lower == 'pypy':
                         libpath = Path(f'libpypy{verdot}-c.dll')
                     else:
-                        libpath = Path(f'python{vernum}.dll')
+                        if self.is_freethreaded:
+                            libpath = Path(f'python{vernum}t.dll')
+                        else:
+                            libpath = Path(f'python{vernum}.dll')
                 else:
                     if self.is_freethreaded:
                         libpath = Path('libs') / f'python{vernum}t.lib'
@@ -246,13 +250,13 @@ class _PythonDependencyBase(_Base):
                     # Python itself (except with pybind11, which has an ugly
                     # hack to work around this) - so emit a warning to explain
                     # the cause of the expected link error.
-                    buildtype = self.env.coredata.get_option(mesonlib.OptionKey('buildtype'))
+                    buildtype = self.env.coredata.get_option(OptionKey('buildtype'))
                     assert isinstance(buildtype, str)
-                    debug = self.env.coredata.get_option(mesonlib.OptionKey('debug'))
+                    debug = self.env.coredata.get_option(OptionKey('debug'))
                     # `debugoptimized` buildtype may not set debug=True currently, see gh-11645
                     is_debug_build = debug or buildtype == 'debug'
                     vscrt_debug = False
-                    if mesonlib.OptionKey('b_vscrt') in self.env.coredata.optstore:
+                    if OptionKey('b_vscrt') in self.env.coredata.optstore:
                         vscrt = self.env.coredata.optstore.get_value('b_vscrt')
                         if vscrt in {'mdd', 'mtd', 'from_buildtype', 'static_from_buildtype'}:
                             vscrt_debug = True
