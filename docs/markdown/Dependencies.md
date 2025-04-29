@@ -462,10 +462,11 @@ TODO
 
 Supports the BLAS and LAPACK components of macOS Accelerate, also referred to
 as the vecLib framework. ILP64 support is only available on macOS 13.3 and up.
-From macOS 13.3, Accelerate ships with two different builds of 32-bit (LP64)
-BLAS and LAPACK. Meson will default to the newer of those builds, by defining
-`ACCELERATE_NEW_LAPACK`, unless `MACOS_DEPLOYMENT_TARGET` is set to a version
-lower than 13.3.
+From macOS 13.3 and iOS 16.4, Accelerate ships with two different builds of
+32-bit (LP64) BLAS and LAPACK. Meson will default to the newer of those builds,
+by defining `ACCELERATE_NEW_LAPACK`, unless `MACOS_DEPLOYMENT_TARGET` is set to
+a version lower than 13.3, or `IPHONEOS_DEPLOYMENT_TARGET` is set to a version
+lower than 16.4.
 
 ```meson
 accelerate_dep = dependency('accelerate',

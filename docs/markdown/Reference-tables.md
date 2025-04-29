@@ -205,6 +205,8 @@ Meson natively.
 | ios-simulator       |                                 |
 | tvos                | Apple tvOS                      |
 | tvos-simulator      |                                 |
+| visionos            | Apple visionOS                  |
+| visionos-simulator  |                                 |
 | watchos             | Apple watchOS                   |
 | watchos-simulator   |                                 |
 
