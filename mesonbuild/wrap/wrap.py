@@ -53,7 +53,21 @@ WHITELIST_SUBDOMAIN = 'wrapdb.mesonbuild.com'
 
 ALL_TYPES = ['file', 'git', 'hg', 'svn', 'redirect']
 
-PATCH = shutil.which('patch')
+if mesonlib.is_windows():
+    from ..programs import ExternalProgram
+    from ..mesonlib import version_compare
+    _exclude_paths: T.List[str] = []
+    while True:
+        _patch = ExternalProgram('patch', silent=True, exclude_paths=_exclude_paths)
+        if not _patch.found():
+            break
+        if version_compare(_patch.get_version(), '>=2.6.1'):
+            break
+        _exclude_paths.append(os.path.dirname(_patch.get_path()))
+    PATCH = _patch.get_path() if _patch.found() else None
+else:
+    PATCH = shutil.which('patch')
+
 
 def whitelist_wrapdb(urlstr: str) -> urllib.parse.ParseResult:
     """ raises WrapException if not whitelisted subdomain """
@@ -394,13 +408,18 @@ class Resolver:
         self.add_wrap(wrap)
         return wrap
 
-    def merge_wraps(self, other_resolver: 'Resolver') -> None:
+    def _merge_wraps(self, other_resolver: 'Resolver') -> None:
         for k, v in other_resolver.wraps.items():
             self.wraps.setdefault(k, v)
         for k, v in other_resolver.provided_deps.items():
             self.provided_deps.setdefault(k, v)
         for k, v in other_resolver.provided_programs.items():
             self.provided_programs.setdefault(k, v)
+
+    def load_and_merge(self, subdir: str, subproject: SubProject) -> None:
+        if self.wrap_mode != WrapMode.nopromote:
+            other_resolver = Resolver(self.source_dir, subdir, subproject, self.wrap_mode, self.wrap_frontend, self.allow_insecure, self.silent)
+            self._merge_wraps(other_resolver)
 
     def find_dep_provider(self, packagename: str) -> T.Tuple[T.Optional[str], T.Optional[str]]:
         # Python's ini parser converts all key values to lowercase.
@@ -865,4 +884,4 @@ class Resolver:
                     except PermissionError:
                         os.chmod(dst_file, stat.S_IWUSR)
                         os.remove(dst_file)
-                shutil.copy2(src_file, dst_dir)
+                shutil.copy2(src_file, dst_dir, follow_symlinks=False)

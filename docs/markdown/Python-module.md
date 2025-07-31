@@ -18,7 +18,7 @@ compatible with [PEP-517](https://peps.python.org/pep-0517/), check out
 
 If you are building Python extension modules against a Python interpreter
 located in a venv or Conda environment, you probably want to set
-`python.install_venv=auto`;
+`python.install_env=auto`;
 see [Python module options](Builtin-options.md#python-module) for details.
 
 *Added 0.46.0*
@@ -87,10 +87,22 @@ added methods.
 str py_installation.path()
 ```
 
-*Added 0.50.0*
+*(since 0.50.0)*
 
-Works like the path method of other `ExternalProgram` objects. Was not
-provided prior to 0.50.0 due to a bug.
+*Deprecated in 0.55: use `full_path()` instead*
+
+Works like the path method of `ExternalProgram` objects. Was not provided prior
+to 0.50.0 due to a bug.
+
+#### `full_path()`
+
+```meson
+str py_installation.full_path()
+```
+
+*(since 0.55.0)*
+
+Works like the `full_path()` method of `ExternalProgram` objects: [[external_program.full_path]]
 
 #### `extension_module()`
 
@@ -121,7 +133,7 @@ Additionally, the following diverge from [[shared_module]]'s default behavior:
 - `gnu_symbol_visibility`: if unset, it will default to `'hidden'` on versions
   of Python that support this (the python headers define `PyMODINIT_FUNC` has
   default visibility).
-  
+
 Note that Cython support uses `extension_module`, see [the reference for Cython](Cython.md).
 
 *since 0.63.0* `extension_module` automatically adds a dependency to the library
@@ -158,11 +170,8 @@ void py_installation.install_sources(list_of_files, ...)
 
 Install actual python sources (`.py`).
 
-All positional and keyword arguments are the same as for
-[[install_data]], with the addition of the following:
-
-*Since 0.60.0* `python.platlibdir` and `python.purelibdir` options can be used
-to control the default installation path. See [Python module options](Builtin-options.md#python-module).
+Source files to install are given as positional argument, in the same way as for
+[[install_data]]. Supported keyword arguments are:
 
 - `pure`: On some platforms, architecture independent files are
   expected to be placed in a separate directory. However, if the
@@ -176,6 +185,12 @@ to control the default installation path. See [Python module options](Builtin-op
 
 - `install_tag` *(since 0.60.0)*: A string used by `meson install --tags` command
   to install only a subset of the files. By default it has the tag `python-runtime`.
+
+- `preserve_path`: if `true`, disable stripping child-directories from data
+  files when installing. Default is `false`. *(since 0.64.0)*
+
+*Since 0.60.0* `python.platlibdir` and `python.purelibdir` options can be used
+to control the default installation path. See [Python module options](Builtin-options.md#python-module).
 
 #### `get_install_dir()`
 

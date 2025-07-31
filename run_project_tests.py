@@ -76,7 +76,7 @@ if T.TYPE_CHECKING:
         v: bool
 
 ALL_TESTS = ['cmake', 'common', 'native', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
-             'keyval', 'platform-osx', 'platform-windows', 'platform-linux',
+             'keyval', 'platform-osx', 'platform-windows', 'platform-linux', 'platform-android',
              'java', 'C#', 'vala', 'cython', 'rust', 'd', 'objective c', 'objective c++',
              'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland',
              'format',
@@ -712,7 +712,14 @@ def _run_test(test: TestDef,
     # Build with subprocess
     def build_step() -> None:
         build_start = time.time()
-        pc, o, _ = Popen_safe(compile_commands + dir_args, cwd=test_build_dir, stderr=subprocess.STDOUT)
+
+        if backend is Backend.ninja:
+            # FIXME: meson test inprocess does not handle running ninja via StringIO
+            targets = ['all', 'meson-test-prereq', 'meson-benchmark-prereq']
+        else:
+            targets = []
+
+        pc, o, _ = Popen_safe(compile_commands + dir_args + targets, cwd=test_build_dir, stderr=subprocess.STDOUT)
         testresult.add_step(BuildStep.build, o, '', '', time.time() - build_start)
         if should_fail == 'build':
             if pc.returncode != 0:
@@ -1116,6 +1123,8 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
         TestCategory('platform-osx', 'osx', not mesonlib.is_osx()),
         TestCategory('platform-windows', 'windows', not mesonlib.is_windows() and not mesonlib.is_cygwin()),
         TestCategory('platform-linux', 'linuxlike', mesonlib.is_osx() or mesonlib.is_windows()),
+        # FIXME, does not actually run in CI, change to run the test if an Android cross toolchain is detected.
+        TestCategory('platform-android', 'android', not mesonlib.is_android()),
         TestCategory('java', 'java', backend is not Backend.ninja or not have_java()),
         TestCategory('C#', 'csharp', skip_csharp(backend)),
         TestCategory('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),

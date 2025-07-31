@@ -222,6 +222,7 @@ packages.defaults.update({
     'shaderc': 'misc',
     'iconv': 'misc',
     'intl': 'misc',
+    'atomic': 'misc',
     'dl': 'misc',
     'openssl': 'misc',
     'libcrypto': 'misc',
