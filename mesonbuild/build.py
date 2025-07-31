@@ -1473,7 +1473,6 @@ class BuildTarget(Target):
                 msg = f"Can't link non-PIC static library {t.name!r} into shared library {self.name!r}. "
                 msg += "Use the 'pic' option to static_library to build with PIC."
                 raise InvalidArguments(msg)
-
             self.check_can_link_together(t)
             if isinstance(self, StaticLibrary):
                 # When we're a static library and we link_whole: to another static
@@ -1495,29 +1494,11 @@ class BuildTarget(Target):
     def get_internal_static_libraries_recurse(self, result: OrderedSet[BuildTargetTypes]) -> None:
         for t in self.link_targets:
             if t.is_internal() and t not in result:
-                self.check_can_extract_objects(t, origin, promoted=True)
                 result.add(t)
-                t.get_internal_static_libraries_recurse(result, origin)
+                t.get_internal_static_libraries_recurse(result)
         for t in self.link_whole_targets:
             if t.is_internal():
-                t.get_internal_static_libraries_recurse(result, origin)
-
-    def check_can_extract_objects(self, t: T.Union[Target, CustomTargetIndex], origin: StaticLibrary, promoted: bool = False) -> None:
-        if isinstance(t, (CustomTarget, CustomTargetIndex)) or t.uses_rust():
-            # To extract objects from a custom target we would have to extract
-            # the archive, WIP implementation can be found in
-            # https://github.com/mesonbuild/meson/pull/9218.
-            # For Rust C ABI we could in theory have access to objects, but there
-            # are several meson issues that need to be fixed:
-            # https://github.com/mesonbuild/meson/issues/10722
-            # https://github.com/mesonbuild/meson/issues/10723
-            # https://github.com/mesonbuild/meson/issues/10724
-            m = (f'Cannot link_whole a custom or Rust target {t.name!r} into a static library {origin.name!r}. '
-                 'Instead, pass individual object files with the "objects:" keyword argument if possible.')
-            if promoted:
-                m += (f' Meson had to promote link to link_whole because {origin.name!r} is installed but not {t.name!r},'
-                      f' and thus has to include objects from {t.name!r} to be usable.')
-            raise InvalidArguments(m)
+                t.get_internal_static_libraries_recurse(result)
 
     def _bundle_static_library(self, t: T.Union[BuildTargetTypes], promoted: bool = False) -> None:
         if self.uses_rust():
