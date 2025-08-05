@@ -33,7 +33,6 @@ def test_code(state: 'ModuleState', compiler: 'Compiler',
 
 def generate_hash(*args: Any) -> str:
     hasher = hashlib.sha1()
-    test: List[bytes] = []
     for a in args:
         hasher.update(bytes(str(a), encoding='utf-8'))
     return hasher.hexdigest()

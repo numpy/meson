@@ -45,6 +45,7 @@ class ResolvedTarget:
         self.public_link_flags:   T.List[str] = []
         self.public_compile_opts: T.List[str] = []
         self.libraries:           T.List[str] = []
+        self.target_dependencies: T.List[str] = []
 
 def resolve_cmake_trace_targets(target_name: str,
                                 trace: 'CMakeTraceParser',
@@ -86,6 +87,7 @@ def resolve_cmake_trace_targets(target_name: str,
                     curr_path = Path(*path_to_framework)
                     framework_path = curr_path.parent
                     framework_name = curr_path.stem
+                    res.public_compile_opts += [f"-F{framework_path}"]
                     res.libraries += [f'-F{framework_path}', '-framework', framework_name]
                 else:
                     res.libraries += [curr]
@@ -144,9 +146,13 @@ def resolve_cmake_trace_targets(target_name: str,
             targets += [x for x in tgt.properties['IMPORTED_LOCATION'] if x]
 
         if 'LINK_LIBRARIES' in tgt.properties:
-            targets += [x for x in tgt.properties['LINK_LIBRARIES'] if x]
+            link_libraries = [x for x in tgt.properties['LINK_LIBRARIES'] if x]
+            targets += link_libraries
+            res.target_dependencies += link_libraries
         if 'INTERFACE_LINK_LIBRARIES' in tgt.properties:
-            targets += [x for x in tgt.properties['INTERFACE_LINK_LIBRARIES'] if x]
+            link_libraries = [x for x in tgt.properties['INTERFACE_LINK_LIBRARIES'] if x]
+            targets += link_libraries
+            res.target_dependencies += link_libraries
 
         if f'IMPORTED_LINK_DEPENDENT_LIBRARIES_{cfg}' in tgt.properties:
             targets += [x for x in tgt.properties[f'IMPORTED_LINK_DEPENDENT_LIBRARIES_{cfg}'] if x]

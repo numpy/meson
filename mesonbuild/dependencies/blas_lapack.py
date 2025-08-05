@@ -26,7 +26,7 @@ from .. import mesonlib
 from ..mesonlib import MachineChoice
 from ..options import OptionKey
 
-from .base import DependencyMethods, SystemDependency
+from .base import DependencyMethods, SystemDependency, DependencyException
 from .cmake import CMakeDependency
 from .detect import packages
 from .factory import DependencyFactory, factory_methods
@@ -34,6 +34,7 @@ from .pkgconfig import PkgConfigDependency
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
+    from . factory import DependencyGenerator
 
 """
 TODO: how to select BLAS interface layer (LP64, ILP64)?
@@ -303,7 +304,7 @@ shared linker cache.
 """
 
 
-def check_blas_machine_file(self, name: str, props: dict) -> T.Tuple[bool, T.List[str]]:
+def check_blas_machine_file(name: str, props: dict) -> T.Tuple[bool, T.List[str]]:
     # TBD: do we need to support multiple extra dirs?
     incdir = props.get(f'{name}_includedir')
     assert incdir is None or isinstance(incdir, str)
@@ -364,11 +365,11 @@ class BLASLAPACKMixin():
         prototypes = "".join(f"void {symbol}{suffix}();\n" for symbol in symbols)
         calls = "  ".join(f"{symbol}{suffix}();\n" for symbol in symbols)
         code = (f"{prototypes}"
-                 "int main(int argc, const char *argv[])\n"
-                 "{\n"
+                "int main(int argc, const char *argv[])\n"
+                "{\n"
                 f"  {calls}"
-                 "  return 0;\n"
-                 "}"
+                "  return 0;\n"
+                "}"
                 )
         code = '''#ifdef __cplusplus
                extern "C" {
@@ -720,7 +721,6 @@ class NetlibLAPACKSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependenc
             self.detect([libdir], [incdir])
 
 
-
 class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
     """
     Accelerate is always installed on macOS, and not available on other OSes.
@@ -781,7 +781,6 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
 
         # We won't check symbols here, because Accelerate is built in a consistent fashion
         # with known symbol mangling, unlike OpenBLAS or Netlib BLAS/LAPACK.
-        return None
 
     def get_symbol_suffix(self) -> str:
         return '$NEWLAPACK' if self.interface == 'lp64' else '$NEWLAPACK$ILP64'
@@ -804,7 +803,7 @@ class MKLMixin():
         if not threading_module:
             self.threading = 'iomp'
         elif len(threading_module) > 1:
-            raise mesonlib.MesonException(f'Multiple threading arguments: {threading_modules}')
+            raise mesonlib.MesonException(f'Multiple threading arguments: {threading_module}')
         else:
             # We have a single threading option specified - validate and process it
             opt = threading_module[0]
@@ -818,7 +817,7 @@ class MKLMixin():
         if not sdl_module:
             self.use_sdl = 'auto'
         elif len(sdl_module) > 1:
-            raise mesonlib.MesonException(f'Multiple sdl arguments: {threading_modules}')
+            raise mesonlib.MesonException(f'Multiple sdl arguments: {threading_module}')
         else:
             # We have a single sdl option specified - validate and process it
             opt = sdl_module[0]
@@ -844,8 +843,6 @@ class MKLMixin():
             # If we're here, we got an explicit `sdl: 'true'`
             raise mesonlib.MesonException(f'Linking SDL implies using LP64 and Intel OpenMP, found '
                                           f'conflicting options: {self.interface}, {self.threading}')
-
-        return None
 
 
 class MKLPkgConfigDependency(BLASLAPACKMixin, MKLMixin, PkgConfigDependency):
@@ -874,7 +871,7 @@ class MKLPkgConfigDependency(BLASLAPACKMixin, MKLMixin, PkgConfigDependency):
             # available before the .pc file for SDL
             self.use_sdl = False
 
-        static_opt = kwargs.get('static', env.coredata.get_option(OptionKey('prefer_static')))
+        static_opt = kwargs.get('static', env.coredata.optstore.get_value_for(OptionKey('prefer_static')))
         libtype = 'static' if static_opt else 'dynamic'
 
         if self.use_sdl:
@@ -896,7 +893,6 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
 
         if self.use_sdl:
             self.detect_sdl()
-        return None
 
     def detect_sdl(self) -> None:
         # Use MKLROOT in addition to standard libdir(s)
@@ -926,7 +922,7 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
             self.is_found = True
             self.compile_args += incdir_args
             self.link_args += link_arg
-            if not sys.platform == 'win32':
+            if sys.platform != 'win32':
                 self.link_args += ['-lpthread', '-lm', '-ldl']
 
             # Determine MKL version

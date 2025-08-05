@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2021 The Meson development team
-# Copyright © 2024 Intel Corporation
+# Copyright © 2024-2025 Intel Corporation
 
 from __future__ import annotations
 import json
 import os
 import pickle
+import subprocess
 import tempfile
 import subprocess
 import textwrap
@@ -36,7 +37,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         self.init(testdir, workdir=testdir)
 
     def test_invalid_option_names(self):
-        store = OptionStore()
+        store = OptionStore(False)
         interp = OptionInterpreter(store, '')
 
         def write_file(code: str):
@@ -70,7 +71,7 @@ class PlatformAgnosticTests(BasePlatformTests):
 
     def test_option_validation(self):
         """Test cases that are not catch by the optinterpreter itself."""
-        store = OptionStore()
+        store = OptionStore(False)
         interp = OptionInterpreter(store, '')
 
         def write_file(code: str):
@@ -166,21 +167,25 @@ class PlatformAgnosticTests(BasePlatformTests):
         self.init(testdir)
 
         # no-op change works
-        self.setconf(f'--backend=ninja')
-        self.init(testdir, extra_args=['--reconfigure', '--backend=ninja'])
+        with self.subTest('set the option to the same value'):
+            self.setconf('--backend=ninja')
+            self.init(testdir, extra_args=['--reconfigure', '--backend=ninja'])
 
         # Change backend option is not allowed
-        with self.assertRaises(subprocess.CalledProcessError) as cm:
-            self.setconf('-Dbackend=none')
-        self.assertIn("ERROR: Tried modify read only option 'backend'", cm.exception.stdout)
+        with self.subTest('Changing the backend'):
+            with self.assertRaises(subprocess.CalledProcessError) as cm:
+                self.setconf('-Dbackend=none')
+            self.assertIn("ERROR: Tried to modify read only option 'backend'", cm.exception.stdout)
 
-        # Reconfigure with a different backend is not allowed
-        with self.assertRaises(subprocess.CalledProcessError) as cm:
-            self.init(testdir, extra_args=['--reconfigure', '--backend=none'])
-        self.assertIn("ERROR: Tried modify read only option 'backend'", cm.exception.stdout)
+        # Check that the new value was not written in the store.
+        with self.subTest('option is stored correctly'):
+            self.assertEqual(self.getconf('backend'), 'ninja')
 
         # Wipe with a different backend is allowed
-        self.init(testdir, extra_args=['--wipe', '--backend=none'])
+        with self.subTest('Changing the backend with wipe'):
+            self.init(testdir, extra_args=['--wipe', '--backend=none'])
+
+            self.assertEqual(self.getconf('backend'), 'none')
 
     def test_validate_dirs(self):
         testdir = os.path.join(self.common_test_dir, '1 trivial')
@@ -198,10 +203,10 @@ class PlatformAgnosticTests(BasePlatformTests):
         # Reconfigure of not empty builddir should work
         self.new_builddir()
         Path(self.builddir, 'dummy').touch()
-        self.init(testdir, extra_args=['--reconfigure'])
+        self.init(testdir, extra_args=['--reconfigure', '--buildtype=custom'])
 
         # Setup a valid builddir should update options but not reconfigure
-        self.assertEqual(self.getconf('buildtype'), 'debug')
+        self.assertEqual(self.getconf('buildtype'), 'custom')
         o = self.init(testdir, extra_args=['-Dbuildtype=release'])
         self.assertIn('Directory already configured', o)
         self.assertNotIn('The Meson build system', o)
@@ -375,14 +380,14 @@ class PlatformAgnosticTests(BasePlatformTests):
         for code in ('', '\n'):
             formatted = formatter.format(code, Path())
             self.assertEqual('\n', formatted)
-    
+
     def test_format_indent_comment_in_brackets(self) -> None:
         """Ensure comments in arrays and dicts are correctly indented"""
         formatter = Formatter(None, use_editor_config=False, fetch_subdirs=False)
         code = 'a = [\n    # comment\n]\n'
         formatted = formatter.format(code, Path())
         self.assertEqual(code, formatted)
-        
+
         code = 'a = [\n    # comment\n    1,\n]\n'
         formatted = formatter.format(code, Path())
         self.assertEqual(code, formatted)
@@ -390,7 +395,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         code = 'a = {\n    # comment\n}\n'
         formatted = formatter.format(code, Path())
         self.assertEqual(code, formatted)
-        
+
     def test_error_configuring_subdir(self):
         testdir = os.path.join(self.common_test_dir, '152 index customtarget')
         out = self.init(os.path.join(testdir, 'subdir'), allow_fail=True)
@@ -400,23 +405,29 @@ class PlatformAgnosticTests(BasePlatformTests):
         self.assertIn(f'Did you mean to run meson from the directory: "{testdir}"?', out)
 
     def test_reconfigure_base_options(self):
-        testdir = os.path.join(self.unit_test_dir, '122 reconfigure base options')
+        testdir = os.path.join(self.unit_test_dir, '123 reconfigure base options')
         out = self.init(testdir, extra_args=['-Db_ndebug=true'])
         self.assertIn('\nMessage: b_ndebug: true\n', out)
         self.assertIn('\nMessage: c_std: c89\n', out)
 
         out = self.init(testdir, extra_args=['--reconfigure', '-Db_ndebug=if-release', '-Dsub:b_ndebug=false', '-Dc_std=c99', '-Dsub:c_std=c11'])
-        self.assertIn('\nMessage: b_ndebug: if-release\n', out)
-        self.assertIn('\nMessage: c_std: c99\n', out)
-        self.assertIn('\nsub| Message: b_ndebug: false\n', out)
-        self.assertIn('\nsub| Message: c_std: c11\n', out)
+        self.assertIn('\n    b_ndebug    : if-release\n', out)
+        self.assertIn('\n    c_std       : c99\n', out)
+        self.assertIn('\n    sub:b_ndebug: false\n', out)
+        self.assertIn('\n    sub:c_std   : c11\n', out)
 
     def test_setup_with_unknown_option(self):
         testdir = os.path.join(self.common_test_dir, '1 trivial')
 
-        for option in ('not_an_option', 'b_not_an_option'):
-            out = self.init(testdir, extra_args=['--wipe', f'-D{option}=1'], allow_fail=True)
-            self.assertIn(f'ERROR: Unknown options: "{option}"', out)
+        with self.subTest('unknown user option'):
+            out = self.init(testdir, extra_args=['-Dnot_an_option=1'], allow_fail=True)
+            self.assertIn('ERROR: Unknown options: "not_an_option"', out)
+
+        with self.subTest('unknown builtin option'):
+            self.new_builddir()
+            out = self.init(testdir, extra_args=['-Db_not_an_option=1'], allow_fail=True)
+            self.assertIn('ERROR: Unknown options: "b_not_an_option"', out)
+
 
     def test_configure_new_option(self) -> None:
         """Adding a new option without reconfiguring should work."""
@@ -440,7 +451,17 @@ class PlatformAgnosticTests(BasePlatformTests):
                 f.write(line)
         with self.assertRaises(subprocess.CalledProcessError) as e:
             self.setconf('-Dneg_int_opt=0')
-        self.assertIn('Unknown options: "neg_int_opt"', e.exception.stdout)
+        self.assertIn('Unknown options: ":neg_int_opt"', e.exception.stdout)
+
+    def test_reconfigure_option(self) -> None:
+        testdir = self.copy_srcdir(os.path.join(self.common_test_dir, '40 options'))
+        self.init(testdir)
+        self.assertEqual(self.getconf('neg_int_opt'), -3)
+        with self.assertRaises(subprocess.CalledProcessError) as e:
+            self.init(testdir, extra_args=['--reconfigure', '-Dneg_int_opt=0'])
+        self.assertEqual(self.getconf('neg_int_opt'), -3)
+        self.init(testdir, extra_args=['--reconfigure', '-Dneg_int_opt=-2'])
+        self.assertEqual(self.getconf('neg_int_opt'), -2)
 
     def test_configure_option_changed_constraints(self) -> None:
         """Changing the constraints of an option without reconfiguring should work."""
@@ -480,7 +501,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         os.unlink(os.path.join(testdir, 'meson_options.txt'))
         with self.assertRaises(subprocess.CalledProcessError) as e:
             self.setconf('-Dneg_int_opt=0')
-        self.assertIn('Unknown options: "neg_int_opt"', e.exception.stdout)
+        self.assertIn('Unknown options: ":neg_int_opt"', e.exception.stdout)
 
     def test_configure_options_file_added(self) -> None:
         """A new project option file should be detected."""
@@ -508,3 +529,17 @@ class PlatformAgnosticTests(BasePlatformTests):
             f.write("option('new_option', type : 'boolean', value : false)")
         self.setconf('-Dsubproject:new_option=true')
         self.assertEqual(self.getconf('subproject:new_option'), True)
+
+    def test_mtest_rebuild_deps(self):
+        testdir = os.path.join(self.unit_test_dir, '106 underspecified mtest')
+        self.init(testdir)
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self._run(self.mtest_command)
+        self.clean()
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self._run(self.mtest_command + ['runner-without-dep'])
+        self.clean()
+
+        self._run(self.mtest_command + ['runner-with-exedep'])

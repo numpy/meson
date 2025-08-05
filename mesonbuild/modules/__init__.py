@@ -20,6 +20,7 @@ if T.TYPE_CHECKING:
     from ..interpreterbase import TYPE_var, TYPE_kwargs
     from ..programs import OverrideProgram
     from ..dependencies import Dependency
+    from ..options import ElementaryOptionValues
 
 class ModuleState:
     """Object passed to all module methods.
@@ -38,7 +39,7 @@ class ModuleState:
         self.subproject = interpreter.subproject
         self.subdir = interpreter.subdir
         self.root_subdir = interpreter.root_subdir
-        self.current_lineno = interpreter.current_lineno
+        self.current_lineno = interpreter.current_node.lineno
         self.environment = interpreter.environment
         self.project_name = interpreter.build.project_name
         self.project_version = interpreter.build.dep_manifest[interpreter.active_projectname].version
@@ -132,8 +133,8 @@ class ModuleState:
         self._interpreter.func_test(self.current_node, real_args, kwargs)
 
     def get_option(self, name: str, subproject: str = '',
-                   machine: MachineChoice = MachineChoice.HOST) -> T.Union[T.List[str], str, int, bool]:
-        return self.environment.coredata.get_option(OptionKey(name, subproject, machine))
+                   machine: MachineChoice = MachineChoice.HOST) -> ElementaryOptionValues:
+        return self.environment.coredata.optstore.get_value_for(OptionKey(name, subproject, machine))
 
     def is_user_defined_option(self, name: str, subproject: str = '',
                                machine: MachineChoice = MachineChoice.HOST,

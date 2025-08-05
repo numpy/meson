@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2014-2016 The Meson development team
-# Copyright © 2023-2024 Intel Corporation
+# Copyright © 2023-2025 Intel Corporation
 
 from __future__ import annotations
 
@@ -26,8 +26,6 @@ from .optinterpreter import OptionInterpreter
 
 if T.TYPE_CHECKING:
     from typing_extensions import Protocol
-    from typing import Any
-    from .options import UserOption
     import argparse
 
     class CMDOptions(coredata.SharedCMDOptions, Protocol):
@@ -35,6 +33,7 @@ if T.TYPE_CHECKING:
         builddir: str
         clearcache: bool
         pager: bool
+        unset_opts: T.List[str]
 
     # cannot be TV_Loggable, because non-ansidecorators do direct string concat
     LOGLINE = T.Union[str, mlog.AnsiDecorator]
@@ -48,6 +47,8 @@ def add_arguments(parser: 'argparse.ArgumentParser') -> None:
                         help='Clear cached state (e.g. found dependencies)')
     parser.add_argument('--no-pager', action='store_false', dest='pager',
                         help='Do not redirect output to a pager')
+    parser.add_argument('-U', action='append', dest='unset_opts', default=[],
+                        help='Remove a subproject option.')
 
 def stringify(val: T.Any) -> str:
     if isinstance(val, bool):
@@ -72,6 +73,7 @@ class Conf:
             self.build_dir = os.path.dirname(self.build_dir)
         self.build = None
         self.max_choices_line_length = 60
+        self.pending_section: T.Optional[str] = None
         self.name_col: T.List[LOGLINE] = []
         self.value_col: T.List[LOGLINE] = []
         self.choices_col: T.List[LOGLINE] = []
@@ -95,7 +97,7 @@ class Conf:
                         if ophash != conf_options[1]:
                             oi = OptionInterpreter(self.coredata.optstore, sub)
                             oi.process(opfile)
-                            self.coredata.update_project_options(oi.options, sub)
+                            self.coredata.optstore.update_project_options(oi.options, sub)
                             self.coredata.options_files[sub] = (opfile, ophash)
                 else:
                     opfile = os.path.join(self.source_dir, 'meson.options')
@@ -104,12 +106,12 @@ class Conf:
                     if os.path.exists(opfile):
                         oi = OptionInterpreter(self.coredata.optstore, sub)
                         oi.process(opfile)
-                        self.coredata.update_project_options(oi.options, sub)
+                        self.coredata.optstore.update_project_options(oi.options, sub)
                         with open(opfile, 'rb') as f:
                             ophash = hashlib.sha1(f.read()).hexdigest()
                         self.coredata.options_files[sub] = (opfile, ophash)
                     else:
-                        self.coredata.update_project_options({}, sub)
+                        self.coredata.optstore.update_project_options({}, sub)
         elif os.path.isfile(os.path.join(self.build_dir, environment.build_filename)):
             # Make sure that log entries in other parts of meson don't interfere with the JSON output
             with mlog.no_logging():
@@ -123,9 +125,6 @@ class Conf:
 
     def clear_cache(self) -> None:
         self.coredata.clear_cache()
-
-    def set_options(self, options: T.Dict[OptionKey, str]) -> bool:
-        return self.coredata.set_options(options)
 
     def save(self) -> None:
         # Do nothing when using introspection
@@ -148,7 +147,7 @@ class Conf:
         Each column will have a specific width, and will be line wrapped.
         """
         total_width = shutil.get_terminal_size(fallback=(160, 0))[0]
-        _col = max(total_width // 5, 20)
+        _col = max(total_width // 5, 24)
         last_column = total_width - (3 * _col) - 3
         four_column = (_col, _col, _col, last_column if last_column > 1 else _col)
 
@@ -189,10 +188,11 @@ class Conf:
                 items = [l[i] if l[i] else ' ' * four_column[i] for i in range(4)]
                 mlog.log(*items)
 
-    def split_options_per_subproject(self, options: 'T.Union[dict[OptionKey, UserOption[Any]], coredata.KeyedOptionDictType]') -> T.Dict[str, 'coredata.MutableKeyedOptionDictType']:
-        result: T.Dict[str, 'coredata.MutableKeyedOptionDictType'] = {}
-        for k, o in options.items():
-            if k.subproject:
+    def split_options_per_subproject(self, opts: T.Union[options.MutableKeyedOptionDictType, options.OptionStore]
+                                     ) -> T.Dict[str, options.MutableKeyedOptionDictType]:
+        result: T.Dict[str, options.MutableKeyedOptionDictType] = {}
+        for k, o in opts.items():
+            if k.subproject is not None:
                 self.all_subprojects.add(k.subproject)
             result.setdefault(k.subproject, {})[k] = o
         return result
@@ -207,12 +207,15 @@ class Conf:
         self.choices_col.append(choices)
         self.descr_col.append(descr)
 
-    def add_option(self, name: str, descr: str, value: T.Any, choices: T.Any) -> None:
+    def add_option(self, key: OptionKey, descr: str, value: T.Any, choices: T.Any) -> None:
+        self._add_section()
         value = stringify(value)
         choices = stringify(choices)
-        self._add_line(mlog.green(name), mlog.yellow(value), mlog.blue(choices), descr)
+        self._add_line(mlog.green(str(key.evolve(subproject=None))), mlog.yellow(value),
+                       mlog.blue(choices), descr)
 
     def add_title(self, title: str) -> None:
+        self._add_section()
         newtitle = mlog.cyan(title)
         descr = mlog.cyan('Description')
         value = mlog.cyan('Default Value' if self.default_values_only else 'Current Value')
@@ -221,26 +224,32 @@ class Conf:
         self._add_line(newtitle, value, choices, descr)
         self._add_line('-' * len(newtitle), '-' * len(value), '-' * len(choices), '-' * len(descr))
 
-    def add_section(self, section: str) -> None:
+    def _add_section(self) -> None:
+        if not self.pending_section:
+            return
         self.print_margin = 0
         self._add_line('', '', '', '')
-        self._add_line(mlog.normal_yellow(section + ':'), '', '', '')
+        self._add_line(mlog.normal_yellow(self.pending_section + ':'), '', '', '')
         self.print_margin = 2
+        self.pending_section = None
 
-    def print_options(self, title: str, opts: 'T.Union[dict[OptionKey, UserOption[Any]], coredata.KeyedOptionDictType]') -> None:
+    def add_section(self, section: str) -> None:
+        self.pending_section = section
+
+    def print_options(self, title: str, opts: T.Union[options.MutableKeyedOptionDictType, options.OptionStore]) -> None:
         if not opts:
             return
         if title:
             self.add_title(title)
-        auto = T.cast('options.UserFeatureOption', self.coredata.optstore.get_value_object('auto_features'))
+        #auto = T.cast('options.UserFeatureOption', self.coredata.optstore.get_value_for('auto_features'))
         for k, o in sorted(opts.items()):
             printable_value = o.printable_value()
-            root = k.as_root()
-            if o.yielding and k.subproject and root in self.coredata.optstore:
-                printable_value = '<inherited from main project>'
-            if isinstance(o, options.UserFeatureOption) and o.is_auto():
-                printable_value = auto.printable_value()
-            self.add_option(str(root), o.description, printable_value, o.choices)
+            #root = k.as_root()
+            #if o.yielding and k.subproject and root in self.coredata.options:
+            #    printable_value = '<inherited from main project>'
+            #if isinstance(o, options.UserFeatureOption) and o.is_auto():
+            #    printable_value = auto.printable_value()
+            self.add_option(k, o.description, printable_value, o.printable_choices())
 
     def print_conf(self, pager: bool) -> None:
         if pager:
@@ -263,11 +272,11 @@ class Conf:
         test_option_names = {OptionKey('errorlogs'),
                              OptionKey('stdsplit')}
 
-        dir_options: 'coredata.MutableKeyedOptionDictType' = {}
-        test_options: 'coredata.MutableKeyedOptionDictType' = {}
-        core_options: 'coredata.MutableKeyedOptionDictType' = {}
-        module_options: T.Dict[str, 'coredata.MutableKeyedOptionDictType'] = collections.defaultdict(dict)
-        for k, v in self.coredata.optstore.items():
+        dir_options: options.MutableKeyedOptionDictType = {}
+        test_options: options.MutableKeyedOptionDictType = {}
+        core_options: options.MutableKeyedOptionDictType = {}
+        module_options: T.Dict[str, options.MutableKeyedOptionDictType] = collections.defaultdict(dict)
+        for k, v in self.coredata.optstore.options.items():
             if k in dir_option_names:
                 dir_options[k] = v
             elif k in test_option_names:
@@ -289,15 +298,15 @@ class Conf:
         project_options = self.split_options_per_subproject({k: v for k, v in self.coredata.optstore.items() if self.coredata.optstore.is_project_option(k)})
         show_build_options = self.default_values_only or self.build.environment.is_cross_build()
 
-        self.add_section('Main project options')
-        self.print_options('Core options', host_core_options[''])
-        if show_build_options:
-            self.print_options('', build_core_options[''])
+        self.add_section('Global build options')
+        self.print_options('Core options', host_core_options[None])
+        if show_build_options and build_core_options:
+            self.print_options('', build_core_options[None])
         self.print_options('Backend options', {k: v for k, v in self.coredata.optstore.items() if self.coredata.optstore.is_backend_option(k)})
         self.print_options('Base options', {k: v for k, v in self.coredata.optstore.items() if self.coredata.optstore.is_base_option(k)})
-        self.print_options('Compiler options', host_compiler_options.get('', {}))
+        self.print_options('Compiler options', host_compiler_options.get(None, {}))
         if show_build_options:
-            self.print_options('', build_compiler_options.get('', {}))
+            self.print_options('', build_compiler_options.get(None, {}))
         for mod, mod_options in module_options.items():
             self.print_options(f'{mod} module options', mod_options)
         self.print_options('Directories', dir_options)
@@ -305,8 +314,9 @@ class Conf:
         self.print_options('Project options', project_options.get('', {}))
         for subproject in sorted(self.all_subprojects):
             if subproject == '':
-                continue
-            self.add_section('Subproject ' + subproject)
+                self.add_section('Main project')
+            else:
+                self.add_section('Subproject ' + subproject)
             if subproject in host_core_options:
                 self.print_options('Core options', host_core_options[subproject])
             if subproject in build_core_options and show_build_options:
@@ -315,7 +325,7 @@ class Conf:
                 self.print_options('Compiler options', host_compiler_options[subproject])
             if subproject in build_compiler_options and show_build_options:
                 self.print_options('', build_compiler_options[subproject])
-            if subproject in project_options:
+            if subproject != '' and subproject in project_options:
                 self.print_options('Project options', project_options[subproject])
         self.print_aligned()
 
@@ -325,6 +335,7 @@ class Conf:
             print_default_values_warning()
 
         self.print_nondefault_buildtype_options()
+        self.print_augments()
 
     def print_nondefault_buildtype_options(self) -> None:
         mismatching = self.coredata.get_nondefault_buildtype_args()
@@ -335,8 +346,30 @@ class Conf:
         for m in mismatching:
             mlog.log(f'{m[0]:21}{m[1]:10}{m[2]:10}')
 
+    def print_augments(self) -> None:
+        if self.coredata.optstore.augments:
+            mlog.log('\nCurrently set option augments:')
+            for k, v in self.coredata.optstore.augments.items():
+                mlog.log(f'{k:21}{v:10}')
+        else:
+            mlog.log('\nThere are no option augments.')
+
+def has_option_flags(options: CMDOptions) -> bool:
+    if options.cmd_line_options:
+        return True
+    if options.unset_opts:
+        return True
+    return False
+
+def is_print_only(options: CMDOptions) -> bool:
+    if has_option_flags(options):
+        return False
+    if options.clearcache:
+        return False
+    return True
+
 def run_impl(options: CMDOptions, builddir: str) -> int:
-    print_only = not options.cmd_line_options and not options.clearcache
+    print_only = is_print_only(options)
     c = None
     try:
         c = Conf(builddir)
@@ -347,8 +380,8 @@ def run_impl(options: CMDOptions, builddir: str) -> int:
             return 0
 
         save = False
-        if options.cmd_line_options:
-            save = c.set_options(options.cmd_line_options)
+        if has_option_flags(options):
+            save |= c.coredata.set_from_configure_command(options)
             coredata.update_cmd_line_file(builddir, options)
         if options.clearcache:
             c.clear_cache()
