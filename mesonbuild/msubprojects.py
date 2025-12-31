@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, InitVar
-import os, subprocess
+import sys, os, subprocess
 import argparse
 import asyncio
+import fnmatch
 import threading
 import copy
 import shutil
@@ -59,6 +60,9 @@ if T.TYPE_CHECKING:
         save: bool
 
 ALL_TYPES_STRING = ', '.join(ALL_TYPES)
+
+if sys.version_info >= (3, 14):
+    tarfile.TarFile.extraction_filter = staticmethod(tarfile.fully_trusted_filter)
 
 def read_archive_files(path: Path, base_path: Path) -> T.Set[Path]:
     if path.suffix == '.zip':
@@ -640,9 +644,14 @@ def add_common_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--allow-insecure', default=False, action='store_true',
                    help='Allow insecure server connections.')
 
-def add_subprojects_argument(p: argparse.ArgumentParser) -> None:
-    p.add_argument('subprojects', nargs='*',
-                   help='List of subprojects (default: all)')
+def add_subprojects_argument(p: argparse.ArgumentParser, name: str = None) -> None:
+    helpstr = 'Patterns of subprojects to operate on (default: all)'
+    if name:
+        p.add_argument(name, dest='subprojects', metavar='pattern', nargs=1, action='append',
+                       default=[], help=helpstr)
+    else:
+        p.add_argument('subprojects', metavar='pattern', nargs='*', default=[],
+                       help=helpstr)
 
 def add_wrap_update_parser(subparsers: 'SubParsers') -> argparse.ArgumentParser:
     p = subparsers.add_parser('update', help='Update wrap files from WrapDB (Since 0.63.0)')
@@ -692,7 +701,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     p.add_argument('args', nargs=argparse.REMAINDER,
                    help=argparse.SUPPRESS)
     add_common_arguments(p)
-    p.set_defaults(subprojects=[])
+    add_subprojects_argument(p, '--filter')
     p.set_defaults(subprojects_func=Runner.foreach)
 
     p = subparsers.add_parser('purge', help='Remove all wrap-based subproject artifacts')
@@ -724,7 +733,8 @@ def run(options: 'Arguments') -> int:
         return 0
     r = Resolver(source_dir, subproject_dir, wrap_frontend=True, allow_insecure=options.allow_insecure, silent=True)
     if options.subprojects:
-        wraps = [wrap for name, wrap in r.wraps.items() if name in options.subprojects]
+        wraps = [wrap for name, wrap in r.wraps.items()
+                 if any(fnmatch.fnmatch(name, pat) for pat in options.subprojects)]
     else:
         wraps = list(r.wraps.values())
     types = [t.strip() for t in options.types.split(',')] if options.types else []

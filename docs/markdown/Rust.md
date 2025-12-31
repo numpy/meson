@@ -27,14 +27,20 @@ feature is stabilized.
 
 ## Mixing Rust and non-Rust sources
 
-Meson currently does not support creating a single target with Rust and non Rust
-sources mixed together, therefore one must compile multiple libraries and link
-them.
+*(Since 1.9.0)* Rust supports mixed targets, but only supports using
+`rustc` as the linker for such targets. If you need to use a non-Rust
+linker, or support Meson < 1.9.0, see below.
+
+Until Meson 1.9.0, Meson did not support creating a single target with
+Rust and non Rust sources mixed together. One had to compile a separate
+Rust `static_library` or `shared_library`, and link it into the C build
+target (e.g., a library or an executable).
 
 ```meson
 rust_lib = static_library(
     'rust_lib',
     sources : 'lib.rs',
+    rust_abi: 'c',
     ...
 )
 
@@ -44,7 +50,6 @@ c_lib = static_library(
     link_with : rust_lib,
 )
 ```
-This is an implementation detail of Meson, and is subject to change in the future.
 
 ## Mixing Generated and Static sources
 
@@ -83,7 +88,7 @@ Meson will generate a `rust-project.json` file in the root of the build
 directory if there are any rust targets in the project. Most IDEs will need to
 be configured to use the file as it's not in the source root (Meson does not
 write files into the source directory). [See the upstream
-docs](https://rust-analyzer.github.io/manual.html#non-cargo-based-projects) for
+docs](https://rust-analyzer.github.io/book/non_cargo_based_projects.html) for
 more information on how to configure that.
 
 ## Linking with standard libraries

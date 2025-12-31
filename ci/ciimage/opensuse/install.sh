@@ -16,9 +16,11 @@ pkgs=(
   qt6-declarative-devel  qt6-base-devel qt6-tools qt6-tools-linguist qt6-declarative-tools qt6-core-private-devel
   libwmf-devel valgrind cmake nasm gnustep-base-devel gettext-tools gettext-runtime gettext-csharp ncurses-devel
   libxml2-devel libxslt-devel libyaml-devel glib2-devel json-glib-devel
-  boost-devel libboost_date_time-devel libboost_filesystem-devel libboost_locale-devel libboost_system-devel
-  libboost_test-devel libboost_log-devel libboost_regex-devel
+  boost-devel libboost_date_time-devel libboost_filesystem-devel libboost_locale-devel
+  libboost_headers-devel libboost_test-devel libboost_log-devel libboost_regex-devel
   libboost_python3-devel libboost_regex-devel
+  # HACK: remove npm once we switch back to hotdoc sdist
+  npm
 )
 
 # Sys update
@@ -27,7 +29,12 @@ zypper --non-interactive update
 
 # Install deps
 zypper install -y "${pkgs[@]}"
-install_python_packages hotdoc
+# HACK: build hotdoc from git repo since current sdist is broken on modern compilers
+# change back to 'hotdoc' once it's fixed
+install_python_packages git+https://github.com/hotdoc/hotdoc
+
+# HACK: uninstall npm after building hotdoc, remove when we remove npm
+zypper remove -y -u npm
 
 echo 'export PKG_CONFIG_PATH="/usr/lib64/mpi/gcc/openmpi3/lib64/pkgconfig:$PKG_CONFIG_PATH"' >> /ci/env_vars.sh
 

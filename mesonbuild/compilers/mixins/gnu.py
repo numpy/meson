@@ -522,9 +522,9 @@ class GnuLikeCompiler(Compiler, metaclass=abc.ABCMeta):
 
     @classmethod
     def use_linker_args(cls, linker: str, version: str) -> T.List[str]:
-        if linker not in {'gold', 'bfd', 'lld'}:
+        if linker not in {'bfd', 'eld', 'gold', 'lld'}:
             raise mesonlib.MesonException(
-                f'Unsupported linker, only bfd, gold, and lld are supported, not {linker}.')
+                f'Unsupported linker, only bfd, eld, gold, and lld are supported, not {linker}.')
         return [f'-fuse-ld={linker}']
 
     def get_coverage_args(self) -> T.List[str]:
@@ -534,6 +534,8 @@ class GnuLikeCompiler(Compiler, metaclass=abc.ABCMeta):
         # We want to allow preprocessing files with any extension, such as
         # foo.c.in. In that case we need to tell GCC/CLANG to treat them as
         # assembly file.
+        if self.language == 'fortran':
+            return self.get_preprocess_only_args()
         lang = gnu_lang_map.get(self.language, 'assembler-with-cpp')
         return self.get_preprocess_only_args() + [f'-x{lang}']
 

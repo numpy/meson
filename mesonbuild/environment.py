@@ -12,6 +12,7 @@ import collections
 from . import coredata
 from . import mesonlib
 from . import machinefile
+from . import options
 
 CmdLineFileParser = machinefile.CmdLineFileParser
 
@@ -34,6 +35,7 @@ from .compilers import (
     is_library,
     is_llvm_ir,
     is_object,
+    is_separate_compile,
     is_source,
 )
 
@@ -43,7 +45,7 @@ from mesonbuild import envconfig
 if T.TYPE_CHECKING:
     from .compilers import Compiler
     from .compilers.mixins.visualstudio import VisualStudioLikeCompiler
-    from .options import ElementaryOptionValues
+    from .options import OptionDict, ElementaryOptionValues
     from .wrap.wrap import Resolver
     from . import cargo
 
@@ -213,6 +215,8 @@ def get_llvm_tool_names(tool: str) -> T.List[str]:
     # unless it becomes a stable release.
     suffixes = [
         '', # base (no suffix)
+        '-21.1', '21.1',
+        '-21',  '21',
         '-20.1', '20.1',
         '-20',  '20',
         '-19.1', '19.1',
@@ -646,7 +650,12 @@ class Environment:
         #
         # Note that order matters because of 'buildtype', if it is after
         # 'optimization' and 'debug' keys, it override them.
-        self.options: T.MutableMapping[OptionKey, ElementaryOptionValues] = collections.OrderedDict()
+        self.options: OptionDict = collections.OrderedDict()
+
+        # Environment variables with the name converted into an OptionKey type.
+        # These have subtly different behavior compared to machine files, so do
+        # not store them in self.options.  See _set_default_options_from_env.
+        self.env_opts: OptionDict = {}
 
         # Environment variables with the name converted into an OptionKey type.
         # These have subtly different behavior compared to machine files, so do
@@ -769,7 +778,7 @@ class Environment:
 
         for section, values in config.items():
             if ':' in section:
-                section_subproject, section = section.split(':')
+                section_subproject, section = section.split(':', 1)
             else:
                 section_subproject = ''
             if section == 'built-in options':
@@ -786,6 +795,13 @@ class Environment:
                     # Project options are always for the host machine
                     key = self.mfilestr2key(strk, section, section_subproject, machine)
                     self.options[key] = v
+            elif ':' in section:
+                correct_subproject, correct_section = section.split(':')[-2:]
+                raise MesonException(
+                    'Subproject options should always be set as '
+                    '`[subproject:section]`, even if the options are from a '
+                    'nested subproject. '
+                    f'Replace `[{section_subproject}:{section}]` with `[{correct_subproject}:{correct_section}]`')
 
     def _set_default_options_from_env(self) -> None:
         opts: T.List[T.Tuple[str, str]] = (
@@ -936,6 +952,9 @@ class Environment:
     def is_assembly(self, fname: 'mesonlib.FileOrString') -> bool:
         return is_assembly(fname)
 
+    def is_separate_compile(self, fname: 'mesonlib.FileOrString') -> bool:
+        return is_separate_compile(fname)
+
     def is_llvm_ir(self, fname: 'mesonlib.FileOrString') -> bool:
         return is_llvm_ir(fname)
 
@@ -1072,3 +1091,44 @@ class Environment:
         if extra_paths:
             env.prepend('PATH', list(extra_paths))
         return env
+
+    def add_lang_args(self, lang: str, comp: T.Type['Compiler'],
+                      for_machine: MachineChoice) -> None:
+        """Add global language arguments that are needed before compiler/linker detection."""
+        description = f'Extra arguments passed to the {lang}'
+        argkey = OptionKey(f'{lang}_args', machine=for_machine)
+        largkey = OptionKey(f'{lang}_link_args', machine=for_machine)
+
+        comp_args_from_envvar = False
+        comp_options = self.coredata.optstore.get_pending_value(argkey)
+        if comp_options is None:
+            comp_args_from_envvar = True
+            comp_options = self.env_opts.get(argkey, [])
+
+        link_options = self.coredata.optstore.get_pending_value(largkey)
+        if link_options is None:
+            link_options = self.env_opts.get(largkey, [])
+
+        assert isinstance(comp_options, (str, list)), 'for mypy'
+        assert isinstance(link_options, (str, list)), 'for mypy'
+
+        cargs = options.UserStringArrayOption(
+            argkey.name,
+            description + ' compiler',
+            comp_options, split_args=True, allow_dups=True)
+
+        largs = options.UserStringArrayOption(
+            largkey.name,
+            description + ' linker',
+            link_options, split_args=True, allow_dups=True)
+
+        self.coredata.optstore.add_compiler_option(lang, argkey, cargs)
+        self.coredata.optstore.add_compiler_option(lang, largkey, largs)
+
+        if comp.INVOKES_LINKER and comp_args_from_envvar:
+            # If the compiler acts as a linker driver, and we're using the
+            # environment variable flags for both the compiler and linker
+            # arguments, then put the compiler flags in the linker flags as well.
+            # This is how autotools works, and the env vars feature is for
+            # autotools compatibility.
+            largs.extend_value(comp_options)
