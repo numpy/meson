@@ -5,15 +5,15 @@
 from __future__ import annotations
 
 import functools
-import subprocess, os.path
+import os.path
 import textwrap
 import re
 import typing as T
 
 from .. import options
-from ..mesonlib import EnvironmentException, MesonException, Popen_safe_logged
+from ..mesonlib import EnvironmentException, MesonException, Popen_safe_logged, version_compare
 from ..options import OptionKey
-from .compilers import Compiler, CompileCheckMode, clike_debug_args
+from .compilers import Compiler, CompileCheckMode, clike_debug_args, is_library
 
 if T.TYPE_CHECKING:
     from ..options import MutableKeyedOptionDictType
@@ -141,17 +141,7 @@ class RustCompiler(Compiler):
         if pc.returncode != 0:
             raise EnvironmentException(f'Rust compiler {self.name_string()} cannot compile programs.')
         self._native_static_libs(work_dir, source_name)
-        if self.is_cross:
-            if not environment.has_exe_wrapper():
-                # Can't check if the binaries run so we have to assume they do
-                return
-            cmdlist = environment.exe_wrapper.get_command() + [output_name]
-        else:
-            cmdlist = [output_name]
-        pe = subprocess.Popen(cmdlist, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        pe.wait()
-        if pe.returncode != 0:
-            raise EnvironmentException(f'Executables created by Rust compiler {self.name_string()} are not runnable.')
+        self.run_sanity_check(environment, [output_name], work_dir)
 
     def _native_static_libs(self, work_dir: str, source_name: str) -> None:
         # Get libraries needed to link with a Rust staticlib
@@ -164,6 +154,9 @@ class RustCompiler(Compiler):
             if self.info.kernel == 'none':
                 # no match and kernel == none (i.e. baremetal) is a valid use case.
                 # return and let native_static_libs list empty
+                return
+            if self.info.system == 'emscripten':
+                # no match and emscripten is valid after rustc 1.84
                 return
             raise EnvironmentException('Failed to find native-static-libs in Rust compiler output.')
         # Exclude some well known libraries that we don't need because they
@@ -192,10 +185,53 @@ class RustCompiler(Compiler):
         return stdo.split('\n', maxsplit=1)[0]
 
     @functools.lru_cache(maxsize=None)
-    def get_crt_static(self) -> bool:
+    def get_cfgs(self) -> T.List[str]:
         cmd = self.get_exelist(ccache=False) + ['--print', 'cfg']
         p, stdo, stde = Popen_safe_logged(cmd)
-        return bool(re.search('^target_feature="crt-static"$', stdo, re.MULTILINE))
+        return stdo.splitlines()
+
+    @functools.lru_cache(maxsize=None)
+    def get_crt_static(self) -> bool:
+        return 'target_feature="crt-static"' in self.get_cfgs()
+
+    @functools.lru_cache(maxsize=None)
+    def has_verbatim(self) -> bool:
+        if version_compare(self.version, '< 1.67.0'):
+            return False
+        # GNU ld support '-l:PATH'
+        if 'ld.' in self.linker.id and self.linker.id != 'ld.wasm':
+            return True
+        # -l:+verbatim does not work (yet?) with MSVC link or Apple ld64
+        # (https://github.com/rust-lang/rust/pull/138753).  For ld64, it
+        # works together with -l:+whole_archive because -force_load (the macOS
+        # equivalent of --whole-archive), receives the full path to the library
+        # being linked.  However, Meson uses "bundle", not "whole_archive".
+        return False
+
+    def lib_file_to_l_arg(self, env: Environment, libname: str) -> T.Optional[str]:
+        """Undo the effects of -l on the filename, returning the
+           argument that can be passed to -l, or None if the
+           library name is not supported."""
+        if not is_library(libname):
+            return None
+        libname, ext = os.path.splitext(libname)
+
+        # On Windows, rustc's -lfoo searches either foo.lib or libfoo.a.
+        # Elsewhere, it searches both static and shared libraries and always with
+        # the "lib" prefix; for simplicity just skip .lib on non-Windows.
+        if env.machines[self.for_machine].is_windows():
+            if ext == '.lib':
+                return libname
+            if ext != '.a':
+                return None
+        else:
+            if ext == '.lib':
+                return None
+
+        if not libname.startswith('lib'):
+            return None
+        libname = libname[3:]
+        return libname
 
     def get_debug_args(self, is_debug: bool) -> T.List[str]:
         return clike_debug_args[is_debug]
@@ -203,18 +239,15 @@ class RustCompiler(Compiler):
     def get_optimization_args(self, optimization_level: str) -> T.List[str]:
         return rust_optimization_args[optimization_level]
 
-    def build_rpath_args(self, env: 'Environment', build_dir: str, from_dir: str,
-                         rpath_paths: T.Tuple[str, ...], build_rpath: str,
-                         install_rpath: str) -> T.Tuple[T.List[str], T.Set[bytes]]:
-        args, to_remove = super().build_rpath_args(env, build_dir, from_dir, rpath_paths,
-                                                   build_rpath, install_rpath)
+    def build_rpath_args(self, env: Environment, build_dir: str, from_dir: str,
+                         target: BuildTarget, extra_paths: T.Optional[T.List[str]] = None) -> T.Tuple[T.List[str], T.Set[bytes]]:
+        # add rustc's sysroot to account for rustup installations
+        args, to_remove = super().build_rpath_args(env, build_dir, from_dir, target, [self.get_target_libdir()])
 
-        # ... but then add rustc's sysroot to account for rustup
-        # installations
         rustc_rpath_args = []
         for arg in args:
             rustc_rpath_args.append('-C')
-            rustc_rpath_args.append(f'link-arg={arg}:{self.get_target_libdir()}')
+            rustc_rpath_args.append(f'link-arg={arg}')
         return rustc_rpath_args, to_remove
 
     def compute_parameters_with_absolute_paths(self, parameter_list: T.List[str],
@@ -246,6 +279,12 @@ class RustCompiler(Compiler):
             'Rust edition to use',
             'none',
             choices=['none', '2015', '2018', '2021', '2024'])
+
+        key = self.form_compileropt_key('dynamic_std')
+        opts[key] = options.UserBooleanOption(
+            self.make_option_name(key),
+            'Whether to link Rust build targets to a dynamic libstd',
+            False)
 
         return opts
 
@@ -341,7 +380,7 @@ class RustCompiler(Compiler):
 
         return RustdocTestCompiler(exelist, self.version, self.for_machine,
                                    self.is_cross, self.info, full_version=self.full_version,
-                                   linker=self.linker)
+                                   linker=self.linker, rustc=self)
 
 class ClippyRustCompiler(RustCompiler):
 
@@ -360,6 +399,26 @@ class RustdocTestCompiler(RustCompiler):
        ignored."""
 
     id = 'rustdoc --test'
+
+    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+                 is_cross: bool, info: 'MachineInfo',
+                 full_version: T.Optional[str],
+                 linker: T.Optional['DynamicLinker'], rustc: RustCompiler):
+        super().__init__(exelist, version, for_machine,
+                         is_cross, info, full_version, linker)
+        self.rustc = rustc
+
+    @functools.lru_cache(maxsize=None)
+    def get_sysroot(self) -> str:
+        return self.rustc.get_sysroot()
+
+    @functools.lru_cache(maxsize=None)
+    def get_target_libdir(self) -> str:
+        return self.rustc.get_target_libdir()
+
+    @functools.lru_cache(maxsize=None)
+    def get_cfgs(self) -> T.List[str]:
+        return self.rustc.get_cfgs()
 
     def get_debug_args(self, is_debug: bool) -> T.List[str]:
         return []

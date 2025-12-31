@@ -29,7 +29,7 @@ import mesonbuild.coredata
 import mesonbuild.machinefile
 import mesonbuild.modules.gnome
 from mesonbuild.mesonlib import (
-    BuildDirLock, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
+    DirectoryLock, DirectoryLockAction, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
     relpath, is_linux, git, search_version, do_conf_file, do_conf_str, default_prefix,
     MesonException, EnvironmentException,
@@ -221,6 +221,47 @@ class AllPlatformTests(BasePlatformTests):
         #   Dict value in confdata
         confdata.values = {'VAR': (['value'], 'description')}
         self.assertRaises(MesonException, conf_str, ['#mesondefine VAR'], confdata, 'meson')
+
+    def test_cmake_configuration(self):
+        if self.backend is not Backend.ninja:
+            raise SkipTest('ninja backend needed to configure with cmake')
+
+        cmake = ExternalProgram('cmake')
+        if not cmake.found():
+            raise SkipTest('cmake not available')
+
+        cmake_version = cmake.get_version()
+        if not version_compare(cmake_version, '>=3.13.5'):
+            raise SkipTest('cmake is too old')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            srcdir = os.path.join(tmpdir, 'src')
+
+            shutil.copytree(os.path.join(self.src_root, 'test cases', 'common', '14 configure file'), srcdir)
+            self.init(srcdir)
+
+            cmake_builddir = os.path.join(srcdir, "cmake_builddir")
+            self.assertNotEqual(self.builddir, cmake_builddir)
+            self._run([cmake.path, '-G', 'Ninja', '-S', srcdir, '-B', cmake_builddir])
+
+            header_list = [
+                'config7.h',
+                'config10.h',
+            ]
+
+            for header in header_list:
+                meson_header = ""
+                cmake_header = ""
+
+                with open(os.path.join(self.builddir, header), encoding='utf-8') as f:
+                    meson_header = f.read()
+
+                cmake_header_path = os.path.join(cmake_builddir, header)
+                with open(os.path.join(cmake_builddir, header), encoding='utf-8') as f:
+                    cmake_header = f.read()
+
+                self.assertTrue(cmake_header, f'cmake generated header {header} is empty')
+                self.assertEqual(cmake_header, meson_header)
 
     def test_absolute_prefix_libdir(self):
         '''
@@ -869,11 +910,11 @@ class AllPlatformTests(BasePlatformTests):
 
         self.assertFailedTestCount(1, self.mtest_command + ['--suite', 'mainprj'])
         self.assertFailedTestCount(0, self.mtest_command + ['--suite', 'subprjsucc'])
-        self.assertFailedTestCount(1, self.mtest_command + ['--suite', 'subprjfail'])
+        self.assertFailedTestCount(2, self.mtest_command + ['--suite', 'subprjfail'])
         self.assertFailedTestCount(1, self.mtest_command + ['--suite', 'subprjmix'])
         self.assertFailedTestCount(3, self.mtest_command + ['--no-suite', 'mainprj'])
         self.assertFailedTestCount(4, self.mtest_command + ['--no-suite', 'subprjsucc'])
-        self.assertFailedTestCount(3, self.mtest_command + ['--no-suite', 'subprjfail'])
+        self.assertFailedTestCount(2, self.mtest_command + ['--no-suite', 'subprjfail'])
         self.assertFailedTestCount(3, self.mtest_command + ['--no-suite', 'subprjmix'])
 
         self.assertFailedTestCount(1, self.mtest_command + ['--suite', 'mainprj:fail'])
@@ -896,9 +937,9 @@ class AllPlatformTests(BasePlatformTests):
         self.assertFailedTestCount(3, self.mtest_command + ['--no-suite', 'subprjmix:fail'])
         self.assertFailedTestCount(4, self.mtest_command + ['--no-suite', 'subprjmix:success'])
 
-        self.assertFailedTestCount(2, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix:fail'])
-        self.assertFailedTestCount(3, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix', '--suite', 'mainprj'])
-        self.assertFailedTestCount(2, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix', '--suite', 'mainprj', '--no-suite', 'subprjmix:fail'])
+        self.assertFailedTestCount(3, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix:fail'])
+        self.assertFailedTestCount(4, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix', '--suite', 'mainprj'])
+        self.assertFailedTestCount(3, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix', '--suite', 'mainprj', '--no-suite', 'subprjmix:fail'])
         self.assertFailedTestCount(1, self.mtest_command + ['--suite', 'subprjfail', '--suite', 'subprjmix', '--suite', 'mainprj', '--no-suite', 'subprjmix:fail', 'mainprj-failing_test'])
 
         self.assertFailedTestCount(2, self.mtest_command + ['--no-suite', 'subprjfail:fail', '--no-suite', 'subprjmix:fail'])
@@ -912,7 +953,7 @@ class AllPlatformTests(BasePlatformTests):
         self.utime(os.path.join(testdir, 'meson.build'))
         o = self._run(self.mtest_command + ['--list'])
         self.assertIn('Regenerating build files', o)
-        self.assertIn('test_features / xfail', o)
+        self.assertIn('test_features:xfail', o)
         o = self._run(self.mtest_command + ['--list'])
         self.assertNotIn('Regenerating build files', o)
         # no real targets should have been built
@@ -1401,7 +1442,7 @@ class AllPlatformTests(BasePlatformTests):
         Test that conflicts between -D for builtin options and the corresponding
         long option are detected without false positives or negatives.
         '''
-        testdir = os.path.join(self.unit_test_dir, '128 long opt vs D')
+        testdir = os.path.join(self.unit_test_dir, '129 long opt vs D')
 
         for opt in ['-Dsysconfdir=/etc', '-Dsysconfdir2=/etc']:
             exception_raised = False
@@ -2478,7 +2519,7 @@ class AllPlatformTests(BasePlatformTests):
 
         for lang in langs:
             for target_type in ('executable', 'library'):
-                with self.subTest(f'Language: {lang}; type: {target_type}'):
+                with self.subTest(f'Language: {lang}; type: {target_type}; fresh: yes'):
                     if is_windows() and lang == 'fortran' and target_type == 'library':
                         # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
                         # see "test cases/fortran/6 dynamic"
@@ -2493,17 +2534,44 @@ class AllPlatformTests(BasePlatformTests):
                                   workdir=tmpdir)
                         self._run(ninja,
                                   workdir=os.path.join(tmpdir, 'builddir'))
-                # test directory with existing code file
-                if lang in {'c', 'cpp', 'd'}:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
-                            f.write('int main(void) {}')
-                        self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
-                elif lang in {'java'}:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
-                            f.write('public class Foo { public static void main() {} }')
-                        self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+
+                with self.subTest(f'Language: {lang}; type: {target_type}; fresh: no'):
+                    # test directory with existing code file
+                    if lang in {'c', 'cpp', 'd'}:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
+                                f.write('int main(void) {}')
+                            self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+
+                        # Check for whether we're doing source collection by repeating
+                        # with a bogus file we should pick up (and then fail to compile).
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            with open(os.path.join(tmpdir, 'bar.' + lang), 'w', encoding='utf-8') as f:
+                                f.write('#error bar')
+                            self._run(self.meson_command + ['init'], workdir=tmpdir)
+                            self._run(self.setup_command + ['--backend=ninja', 'builddir'],
+                                    workdir=tmpdir)
+                            with self.assertRaises(subprocess.CalledProcessError):
+                                self._run(ninja,
+                                        workdir=os.path.join(tmpdir, 'builddir'))
+
+                    elif lang in {'java'}:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
+                                f.write('public class Foo { public static void main() {} }')
+                            self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+
+                        # Check for whether we're doing source collection by repeating
+                        # with a bogus file we should pick up (and then fail to compile).
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            with open(os.path.join(tmpdir, 'Bar.' + lang), 'w', encoding='utf-8') as f:
+                                f.write('public class Bar { public private static void main() {} }')
+                            self._run(self.meson_command + ['init'], workdir=tmpdir)
+                            self._run(self.setup_command + ['--backend=ninja', 'builddir'],
+                                    workdir=tmpdir)
+                            with self.assertRaises(subprocess.CalledProcessError):
+                                self._run(ninja,
+                                        workdir=os.path.join(tmpdir, 'builddir'))
 
     def test_compiler_run_command(self):
         '''
@@ -2534,10 +2602,9 @@ class AllPlatformTests(BasePlatformTests):
     def test_flock(self):
         exception_raised = False
         with tempfile.TemporaryDirectory() as tdir:
-            os.mkdir(os.path.join(tdir, 'meson-private'))
-            with BuildDirLock(tdir):
+            with DirectoryLock(tdir, 'lock', DirectoryLockAction.FAIL, 'failed to lock directory'):
                 try:
-                    with BuildDirLock(tdir):
+                    with DirectoryLock(tdir, 'lock', DirectoryLockAction.FAIL, 'expected failure'):
                         pass
                 except MesonException:
                     exception_raised = True
@@ -3304,6 +3371,11 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join(self.unit_test_dir, '58 introspect buildoptions')
         self._run(self.mconf_command + [testdir])
 
+    @skip_if_not_language('rust')
+    def test_meson_configure_srcdir(self):
+        testdir = os.path.join(self.rust_test_dir, '20 rust and cpp')
+        self._run(self.mconf_command + [testdir])
+
     def test_introspect_buildoptions_cross_only(self):
         testdir = os.path.join(self.unit_test_dir, '82 cross only introspect')
         testfile = os.path.join(testdir, 'meson.build')
@@ -3652,6 +3724,8 @@ class AllPlatformTests(BasePlatformTests):
         # Account for differences in output
         res_wb = [i for i in res_wb if i['type'] != 'custom']
         for i in res_wb:
+            if i['id'] == 'test1@exe':
+                i['build_by_default'] = 'unknown'
             i['filename'] = [os.path.relpath(x, self.builddir) for x in i['filename']]
             for k in ('install_filename', 'dependencies', 'win_subsystem'):
                 if k in i:
@@ -3770,7 +3844,7 @@ class AllPlatformTests(BasePlatformTests):
             },
             {
                 'name': 'bugDep1',
-                'required': True,
+                'required': 'unknown',
                 'version': [],
                 'has_fallback': False,
                 'conditional': False
@@ -3788,7 +3862,21 @@ class AllPlatformTests(BasePlatformTests):
                 'version': ['>=1.0.0', '<=99.9.9'],
                 'has_fallback': True,
                 'conditional': True
-            }
+            },
+            {
+                'conditional': False,
+                'has_fallback': False,
+                'name': 'unknown',
+                'required': False,
+                'version': 'unknown'
+            },
+            {
+                'conditional': False,
+                'has_fallback': False,
+                'name': 'unknown',
+                'required': False,
+                'version': 'unknown'
+            },
         ]
         self.maxDiff = None
         self.assertListEqual(res_nb, expected)
@@ -4295,6 +4383,14 @@ class AllPlatformTests(BasePlatformTests):
         self.build()
         self.run_tests()
 
+    def test_custom_target_index_as_test_prereq(self):
+        if self.backend is not Backend.ninja:
+            raise SkipTest('ninja backend needed for "meson test" to build test dependencies')
+
+        testdir = os.path.join(self.unit_test_dir, '131 custom target index test')
+        self.init(testdir)
+        self.run_tests()
+
     @skipUnless(is_linux() and (re.search('^i.86$|^x86$|^x64$|^x86_64$|^amd64$', platform.processor()) is not None),
         'Requires ASM compiler for x86 or x86_64 platform currently only available on Linux CI runners')
     def test_nostdlib(self):
@@ -4492,6 +4588,10 @@ class AllPlatformTests(BasePlatformTests):
         expected = os.pathsep.join(['/prefix', '$TEST_C', '/suffix'])
         self.assertIn(f'TEST_C="{expected}"', o)
         self.assertIn('export TEST_C', o)
+
+        cmd = self.meson_command + ['devenv', '-C', self.builddir] + python_command + ['-c', 'import sys; sys.exit(42)']
+        result = subprocess.run(cmd, encoding='utf-8')
+        self.assertEqual(result.returncode, 42)
 
     def test_clang_format_check(self):
         if self.backend is not Backend.ninja:
@@ -4766,120 +4866,140 @@ class AllPlatformTests(BasePlatformTests):
         expected = {
             'targets': {
                 f'{self.builddir}/out1-notag.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out1-notag.txt',
                     'install_rpath': None,
                     'tag': None,
                     'subproject': None,
                 },
                 f'{self.builddir}/out2-notag.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out2-notag.txt',
                     'install_rpath': None,
                     'tag': None,
                     'subproject': None,
                 },
                 f'{self.builddir}/libstatic.a': {
+                    'build_rpaths': [],
                     'destination': '{libdir_static}/libstatic.a',
                     'install_rpath': None,
                     'tag': 'devel',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + exe_name('app'): {
+                    'build_rpaths': [],
                     'destination': '{bindir}/' + exe_name('app'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + exe_name('app-otherdir'): {
+                    'build_rpaths': [],
                     'destination': '{prefix}/otherbin/' + exe_name('app-otherdir'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + exe_name('app2'): {
+                    'build_rpaths': [],
                     'destination': '{bindir}/' + exe_name('app2'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('shared'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_shared}/' + shared_lib_name('shared'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('both'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_shared}/' + shared_lib_name('both'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + static_lib_name('both'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_static}/' + static_lib_name('both'),
                     'install_rpath': None,
                     'tag': 'devel',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('bothcustom'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_shared}/' + shared_lib_name('bothcustom'),
                     'install_rpath': None,
                     'tag': 'custom',
                     'subproject': None,
                 },
                 f'{self.builddir}/' + static_lib_name('bothcustom'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_static}/' + static_lib_name('bothcustom'),
                     'install_rpath': None,
                     'tag': 'custom',
                     'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + shared_lib_name('both2'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_shared}/' + shared_lib_name('both2'),
                     'install_rpath': None,
                     'tag': 'runtime',
                     'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + static_lib_name('both2'): {
+                    'build_rpaths': [],
                     'destination': '{libdir_static}/' + static_lib_name('both2'),
                     'install_rpath': None,
                     'tag': 'devel',
                     'subproject': None,
                 },
                 f'{self.builddir}/out1-custom.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out1-custom.txt',
                     'install_rpath': None,
                     'tag': 'custom',
                     'subproject': None,
                 },
                 f'{self.builddir}/out2-custom.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out2-custom.txt',
                     'install_rpath': None,
                     'tag': 'custom',
                     'subproject': None,
                 },
                 f'{self.builddir}/out3-custom.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out3-custom.txt',
                     'install_rpath': None,
                     'tag': 'custom',
                     'subproject': None,
                 },
                 f'{self.builddir}/subdir/out1.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out1.txt',
                     'install_rpath': None,
                     'tag': None,
                     'subproject': None,
                 },
                 f'{self.builddir}/subdir/out2.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out2.txt',
                     'install_rpath': None,
                     'tag': None,
                     'subproject': None,
                 },
                 f'{self.builddir}/out-devel.h': {
+                    'build_rpaths': [],
                     'destination': '{includedir}/out-devel.h',
                     'install_rpath': None,
                     'tag': 'devel',
                     'subproject': None,
                 },
                 f'{self.builddir}/out3-notag.txt': {
+                    'build_rpaths': [],
                     'destination': '{datadir}/out3-notag.txt',
                     'install_rpath': None,
                     'tag': None,
@@ -5225,7 +5345,7 @@ class AllPlatformTests(BasePlatformTests):
         self.__test_multi_stds(test_objc=True)
 
     def test_slice(self):
-        testdir = os.path.join(self.unit_test_dir, '126 test slice')
+        testdir = os.path.join(self.unit_test_dir, '127 test slice')
         self.init(testdir)
         self.build()
 
@@ -5237,7 +5357,9 @@ class AllPlatformTests(BasePlatformTests):
                                  '10/10': [10],
                                  }.items():
             output = self._run(self.mtest_command + ['--slice=' + arg])
-            tests = sorted([ int(x) for x in re.findall(r'\n[ 0-9]+/[0-9]+ test-([0-9]*)', output) ])
+            tests = sorted([
+                int(x) for x in re.findall(r'^[ 0-9]+/[0-9]+ test_slice:test-([0-9]*)', output, flags=re.MULTILINE)
+            ])
             self.assertEqual(tests, expectation)
 
         for arg, expectation in {'': 'error: argument --slice: value does not conform to format \'SLICE/NUM_SLICES\'',
@@ -5257,7 +5379,7 @@ class AllPlatformTests(BasePlatformTests):
         env = get_fake_env()
         cc = detect_c_compiler(env, MachineChoice.HOST)
         has_rsp = cc.linker.id in {
-            'ld.bfd', 'ld.gold', 'ld.lld', 'ld.mold', 'ld.qcld', 'ld.wasm',
+            'ld.bfd', 'ld.eld', 'ld.gold', 'ld.lld', 'ld.mold', 'ld.qcld', 'ld.wasm',
             'link', 'lld-link', 'mwldarm', 'mwldeppc', 'optlink', 'xilink',
         }
         self.assertEqual(cc.linker.get_accepts_rsp(), has_rsp)

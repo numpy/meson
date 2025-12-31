@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import abc
 import argparse
-import gzip
 import os
 import sys
 import shlex
@@ -40,6 +39,9 @@ archive_extension = {'bztar': '.tar.bz2',
                      'gztar': '.tar.gz',
                      'xztar': '.tar.xz',
                      'zip': '.zip'}
+
+if sys.version_info >= (3, 14):
+    tarfile.TarFile.extraction_filter = staticmethod(tarfile.fully_trusted_filter)
 
 # Note: when adding arguments, please also add them to the completion
 # scripts in $MESONSRC/data/shell-completions/
@@ -294,6 +296,7 @@ class HgDist(Dist):
                 shutil.copyfileobj(tf, bf)
             output_names.append(bz2name)
         if 'gztar' in archives:
+            import gzip
             with gzip.open(gzname, 'wb') as zf, open(tarname, 'rb') as tf:
                 shutil.copyfileobj(tf, zf)
             output_names.append(gzname)

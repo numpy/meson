@@ -242,6 +242,10 @@ class MultilineArgumentDetector(FullAstVisitor):
         if node.is_multiline:
             self.is_multiline = True
 
+        nargs = len(node)
+        if nargs and nargs == len(node.commas):
+            self.is_multiline = True
+
         if self.is_multiline:
             return
 
@@ -249,6 +253,19 @@ class MultilineArgumentDetector(FullAstVisitor):
             self.is_multiline = True
 
         super().visit_ArgumentNode(node)
+
+
+class MultilineParenthesesDetector(FullAstVisitor):
+
+    def __init__(self) -> None:
+        self.last_whitespaces: T.Optional[mparser.WhitespaceNode] = None
+
+    def enter_node(self, node: mparser.BaseNode) -> None:
+        self.last_whitespaces = None
+
+    def exit_node(self, node: mparser.BaseNode) -> None:
+        if node.whitespaces and node.whitespaces.value:
+            self.last_whitespaces = node.whitespaces
 
 
 class TrimWhitespaces(FullAstVisitor):
@@ -283,6 +300,8 @@ class TrimWhitespaces(FullAstVisitor):
 
     def add_space_after(self, node: mparser.BaseNode) -> None:
         if not node.whitespaces.value:
+            node.whitespaces.value = ' '
+        elif '#' not in node.whitespaces.value:
             node.whitespaces.value = ' '
 
     def add_nl_after(self, node: mparser.BaseNode, force: bool = False) -> None:
@@ -340,6 +359,7 @@ class TrimWhitespaces(FullAstVisitor):
         super().visit_SymbolNode(node)
         if node.value in "([{" and node.whitespaces.value == '\n':
             node.whitespaces.value = ''
+        node.whitespaces.accept(self)
 
     def visit_StringNode(self, node: mparser.StringNode) -> None:
         self.enter_node(node)
@@ -352,7 +372,7 @@ class TrimWhitespaces(FullAstVisitor):
             if node.is_fstring and '@' not in node.value:
                 node.is_fstring = False
 
-        self.exit_node(node)
+        node.whitespaces.accept(self)
 
     def visit_UnaryOperatorNode(self, node: mparser.UnaryOperatorNode) -> None:
         super().visit_UnaryOperatorNode(node)
@@ -536,17 +556,28 @@ class TrimWhitespaces(FullAstVisitor):
     def visit_ParenthesizedNode(self, node: mparser.ParenthesizedNode) -> None:
         self.enter_node(node)
 
-        is_multiline = node.lpar.whitespaces and '#' in node.lpar.whitespaces.value
-        if is_multiline:
+        if node.lpar.whitespaces and '#' in node.lpar.whitespaces.value:
+            node.is_multiline = True
+
+        elif not node.is_multiline:
+            ml_detector = MultilineParenthesesDetector()
+            node.inner.accept(ml_detector)
+            if ml_detector.last_whitespaces and '\n' in ml_detector.last_whitespaces.value:
+                # We keep it multiline if last parenthesis is on a separate line
+                node.is_multiline = True
+
+        if node.is_multiline:
             self.indent_comments += self.config.indent_by
 
         node.lpar.accept(self)
         node.inner.accept(self)
 
-        if is_multiline:
+        if node.is_multiline:
             node.inner.whitespaces.value = self.dedent(node.inner.whitespaces.value)
             self.indent_comments = self.dedent(self.indent_comments)
             self.add_nl_after(node.inner)
+        else:
+            node.inner.whitespaces = None
 
         node.rpar.accept(self)
         self.move_whitespaces(node.rpar, node)
@@ -559,6 +590,7 @@ class ArgumentFormatter(FullAstVisitor):
         self.level = 0
         self.indent_after = False
         self.is_function_arguments = False
+        self.par_level = 0
 
     def add_space_after(self, node: mparser.BaseNode) -> None:
         if not node.whitespaces.value:
@@ -569,7 +601,7 @@ class ArgumentFormatter(FullAstVisitor):
             node.whitespaces.value = '\n'
         indent_by = (node.condition_level + indent) * self.config.indent_by
         if indent_by:
-            node.whitespaces.value += indent_by
+            node.whitespaces.value = re.sub(rf'\n({self.config.indent_by})*', '\n' + indent_by, node.whitespaces.value)
 
     def visit_ArrayNode(self, node: mparser.ArrayNode) -> None:
         self.enter_node(node)
@@ -669,7 +701,7 @@ class ArgumentFormatter(FullAstVisitor):
             if self.config.group_arg_value:
                 for arg in node.arguments[:-1]:
                     group_args = False
-                    if isinstance(arg, mparser.StringNode) and arg.value.startswith('--'):
+                    if isinstance(arg, mparser.StringNode) and arg.value.startswith('--') and arg.value != '--':
                         next_arg = node.arguments[arg_index + 1]
                         if isinstance(next_arg, mparser.StringNode) and not next_arg.value.startswith('--'):
                             group_args = True
@@ -677,11 +709,11 @@ class ArgumentFormatter(FullAstVisitor):
                         # keep '--arg', 'value' on same line
                         self.add_space_after(node.commas[arg_index])
                     elif arg_index < len(node.commas):
-                        self.add_nl_after(node.commas[arg_index], self.level)
+                        self.add_nl_after(node.commas[arg_index], self.level + self.par_level)
                     arg_index += 1
 
             for comma in node.commas[arg_index:-1]:
-                self.add_nl_after(comma, self.level)
+                self.add_nl_after(comma, self.level + self.par_level)
             if node.arguments or node.kwargs:
                 self.add_nl_after(node, self.level - 1)
 
@@ -696,15 +728,36 @@ class ArgumentFormatter(FullAstVisitor):
 
     def visit_ParenthesizedNode(self, node: mparser.ParenthesizedNode) -> None:
         self.enter_node(node)
-        is_multiline = '\n' in node.lpar.whitespaces.value
-        if is_multiline:
+        if node.is_multiline:
+            self.par_level += 1
             current_indent_after = self.indent_after
             self.indent_after = True
         node.lpar.accept(self)
+        if node.is_multiline:
+            self.add_nl_after(node.lpar, indent=self.level + self.par_level)
         node.inner.accept(self)
-        if is_multiline:
+        if node.is_multiline:
+            self.par_level -= 1
             self.indent_after = current_indent_after
         node.rpar.accept(self)
+        self.exit_node(node)
+
+    def visit_OrNode(self, node: mparser.OrNode) -> None:
+        self.enter_node(node)
+        node.left.accept(self)
+        if self.par_level:
+            self.add_nl_after(node.left, indent=self.level + self.par_level)
+        node.operator.accept(self)
+        node.right.accept(self)
+        self.exit_node(node)
+
+    def visit_AndNode(self, node: mparser.AndNode) -> None:
+        self.enter_node(node)
+        node.left.accept(self)
+        if self.par_level:
+            self.add_nl_after(node.left, indent=self.level + self.par_level)
+        node.operator.accept(self)
+        node.right.accept(self)
         self.exit_node(node)
 
 
@@ -806,6 +859,16 @@ class ComputeLineLengths(FullAstVisitor):
         self.split_if_needed(node.args)  # split if closing bracket is too far
         self.exit_node(node)
 
+    def visit_ParenthesizedNode(self, node: mparser.ParenthesizedNode) -> None:
+        self.enter_node(node)
+        node.lpar.accept(self)
+        node.inner.accept(self)
+        node.rpar.accept(self)
+        if not node.is_multiline and self.length > self.config.max_line_length:
+            node.is_multiline = True
+            self.need_regenerate = True
+        self.exit_node(node)
+
 
 class SubdirFetcher(FullAstVisitor):
 
@@ -836,7 +899,15 @@ class Formatter:
         # See https://editorconfig.org/
         config = EditorConfig()
 
-        for p in source_file.parents:
+        if source_file == Path('STDIN'):
+            raise MesonException('Using editorconfig with stdin requires --source-file-path argument')
+
+        try:
+            source_file_path = source_file.resolve()
+        except FileNotFoundError:
+            raise MesonException(f'Unable to resolve path for "{source_file}"')
+
+        for p in source_file_path.parents:
             editorconfig_file = p / '.editorconfig'
             if not editorconfig_file.exists():
                 continue
@@ -955,6 +1026,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help='output file (implies having exactly one input)'
     )
     parser.add_argument(
+        '--source-file-path',
+        type=Path,
+        help='path to use, when reading from stdin'
+    )
+    parser.add_argument(
         'sources',
         nargs='*',
         type=Path,
@@ -980,6 +1056,10 @@ def run(options: argparse.Namespace) -> int:
         raise MesonException('--recursive argument is not compatible with stdin input')
     if options.inplace and from_stdin:
         raise MesonException('--inplace argument is not compatible with stdin input')
+    if options.source_file_path and not from_stdin:
+        raise MesonException('--source-file-path argument is only compatible with stdin input')
+    if from_stdin and options.editor_config and not options.source_file_path:
+        raise MesonException('using --editor-config with stdin input requires --source-file-path argument')
 
     sources: T.List[Path] = options.sources.copy() or [Path(build_filename)]
 
@@ -995,7 +1075,7 @@ def run(options: argparse.Namespace) -> int:
 
         try:
             if from_stdin:
-                src_file = Path('STDIN')  # used for error messages and introspection
+                src_file = options.source_file_path or Path('STDIN')  # used for error messages and introspection
                 code = sys.stdin.read()
             else:
                 code = src_file.read_text(encoding='utf-8')
