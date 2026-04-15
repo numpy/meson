@@ -771,6 +771,10 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
+        # In addition to checking the LP64/ILP64 interface, we need to
+        # differentiate between the original Accelerate, and the
+        # ACCELERATE_NEW_LAPACK variant.
+        self.use_new_lapack = True
 
         for_machine = MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
         if (
@@ -791,21 +795,33 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         return mesonlib.version_compare(sdk_version, '>=13.3')
 
     def check_iOS_recent_enough(self) -> bool:
+        # The ILP64 interface is only available as part of
+        # ACCELERATE_NEW_LAPACK, which requires iOS 16.4 and later.
+        if self.interface == "ilp64":
+            required_version = ">=16.4"
+        else:
+            required_version = ">=13.0"
+
         # platform.ios_ver() is only available since Python 3.13; use getattr
         # so this type-checks across Python versions.
         ios_ver = getattr(platform, 'ios_ver', None)
         if ios_ver is None:
             return False
-        ios_version = ios_ver().system
-        deploy_target = os.environ.get('IPHONEOS_DEPLOYMENT_TARGET', ios_version)
-        if not mesonlib.version_compare(deploy_target, '>=16.4'):
+
+        deploy_target = os.environ.get('IPHONEOS_DEPLOYMENT_TARGET', ios_ver().release)
+
+        if not mesonlib.version_compare(deploy_target, required_version):
             return False
 
-        # We also need the SDK to be >=16.4
+        # If we're targeting iOS < 16.4, we can't use ACCELERATE_NEW_LAPACK
+        if mesonlib.version_compare(deploy_target, "<16.4"):
+            self.use_new_lapack = False
+
+        # We also need the SDK to be the right version
         sdk = "iphonesimulator" if ios_ver().is_simulator else "iphoneos"
         cmd = ['xcrun', '-sdk', sdk, '--show-sdk-version']
         sdk_version = subprocess.run(cmd, capture_output=True, check=True, encoding='utf-8').stdout.strip()
-        return mesonlib.version_compare(sdk_version, '>=16.4')
+        return mesonlib.version_compare(sdk_version, required_version)
 
     def detect(self, kwargs: 'DependencyObjectKWs') -> None:
         from .framework import ExtraFrameworkDependency
@@ -814,7 +830,8 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         if self.is_found:
             self.compile_args = dep.compile_args
             self.link_args = dep.link_args
-            self.compile_args += ['-DACCELERATE_NEW_LAPACK']
+            if self.use_new_lapack:
+                self.compile_args += ['-DACCELERATE_NEW_LAPACK']
             if self.interface == 'ilp64':
                 self.compile_args += ['-DACCELERATE_LAPACK_ILP64']
 
@@ -822,7 +839,10 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         # with known symbol mangling, unlike OpenBLAS or Netlib BLAS/LAPACK.
 
     def get_symbol_suffix(self) -> str:
-        return '$NEWLAPACK' if self.interface == 'lp64' else '$NEWLAPACK$ILP64'
+        if self.use_new_lapack:
+            return '$NEWLAPACK' if self.interface == 'lp64' else '$NEWLAPACK$ILP64'
+        else:
+            return ''
 
 
 class MKLMixin(_BLASLAPACKMixinBase):
