@@ -111,7 +111,8 @@ foreach name, dep_list : deps
     )
     test('cblas_lapack_dep_c', c_exe, timeout: 30)
 
-    if add_languages('fortran', required: false)
+    # main.f90 uses default (32-bit) integers, so only LP64 is exercised.
+    if blas_interface == 'lp64' and add_languages('fortran', required: false)
       f_exe = executable('cblas_lapack_fortran_' + name,
         'main.f90',
         dependencies: dep_list
