@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import functools
 import os
 from pathlib import Path
 import platform
@@ -23,9 +22,10 @@ import typing as T
 
 from .. import mlog
 from .. import mesonlib
-from ..mesonlib import MachineChoice, OptionKey
+from ..mesonlib import MachineChoice
+from ..options import OptionKey
 
-from .base import DependencyMethods, SystemDependency, DependencyException
+from .base import DependencyCandidate, DependencyMethods, ExternalDependency, SystemDependency, DependencyException
 from .cmake import CMakeDependency
 from .detect import packages
 from .factory import DependencyFactory, factory_methods
@@ -33,7 +33,37 @@ from .pkgconfig import PkgConfigDependency
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
+    from ..interpreter.type_checking import PkgConfigDefineType
     from . factory import DependencyGenerator
+    from .base import DependencyObjectKWs
+
+    class _BLASLAPACKMixinBase(ExternalDependency):
+        """Typing-only base declaring the BLAS/LAPACK-specific attributes and
+        methods that the mixins share across the concrete dependency classes
+        they are mixed into. At runtime this is ``object``; the real base is
+        whichever ``ExternalDependency`` subclass each concrete class lists."""
+
+        interface: str
+        needs_cblas: bool
+        needs_lapack: bool
+        needs_lapacke: bool
+        threading: str
+        use_sdl: T.Union[bool, str]
+        sdl_default_opts: bool
+        _ilp64_suffix: str
+
+        def parse_modules(self, kwargs: DependencyObjectKWs) -> None:
+            raise NotImplementedError
+
+        def get_symbol_suffix(self) -> str:
+            raise NotImplementedError
+
+        def check_symbols(self, compile_args: T.List[str], suffix: T.Optional[str] = None,
+                          check_cblas: bool = True, check_lapacke: bool = True,
+                          lapack_only: bool = False) -> bool:
+            raise NotImplementedError
+else:
+    _BLASLAPACKMixinBase = object
 
 """
 TODO: how to select BLAS interface layer (LP64, ILP64)?
@@ -325,9 +355,9 @@ def check_blas_machine_file(name: str, props: dict) -> T.Tuple[bool, T.List[str]
     return (False, [])
 
 
-class BLASLAPACKMixin():
-    def parse_modules(self, kwargs: T.Dict[str, T.Any]) -> None:
-        modules: T.List[str] = mesonlib.extract_as_list(kwargs, 'modules')
+class BLASLAPACKMixin(_BLASLAPACKMixinBase):
+    def parse_modules(self, kwargs: 'DependencyObjectKWs') -> None:
+        modules: T.List[str] = kwargs.get('modules', [])
         valid_modules = ['interface: lp64', 'interface: ilp64', 'cblas', 'lapack', 'lapacke']
         for module in modules:
             if module not in valid_modules:
@@ -345,8 +375,9 @@ class BLASLAPACKMixin():
         self.needs_lapack = 'lapack' in modules
         self.needs_lapacke = 'lapacke' in modules
 
-    def check_symbols(self, compile_args, suffix=None, check_cblas=True,
-                      check_lapacke=True, lapack_only=False) -> None:
+    def check_symbols(self, compile_args: T.List[str], suffix: T.Optional[str] = None,
+                      check_cblas: bool = True, check_lapacke: bool = True,
+                      lapack_only: bool = False) -> bool:
         # verify that we've found the right LP64/ILP64 interface
         symbols = []
         if not lapack_only:
@@ -379,24 +410,28 @@ class BLASLAPACKMixin():
                #endif
                '''
 
-        return self.clib_compiler.links(code, self.env, extra_args=compile_args)[0]
+        return self.clib_compiler.links(code, extra_args=compile_args)[0]
 
-    def get_variable(self, **kwargs: T.Dict[str, T.Any]) -> str:
+    def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
+                     configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
+                     system: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: 'PkgConfigDefineType' = None) -> str:
         # TODO: what's going on with `get_variable`? Need to pick from
         # cmake/pkgconfig/internal/..., but not system?
-        varname = kwargs['pkgconfig']
-        if varname == 'interface':
+        if pkgconfig == 'interface':
             return self.interface
-        elif varname == 'symbol_suffix':
+        elif pkgconfig == 'symbol_suffix':
             return self.get_symbol_suffix()
-        return super().get_variable(**kwargs)
+        return super().get_variable(cmake=cmake, pkgconfig=pkgconfig, configtool=configtool,
+                                    internal=internal, system=system, default_value=default_value,
+                                    pkgconfig_define=pkgconfig_define)
 
 
-class OpenBLASMixin():
+class OpenBLASMixin(_BLASLAPACKMixinBase):
     def get_symbol_suffix(self) -> str:
         return '' if self.interface == 'lp64' else self._ilp64_suffix
 
-    def probe_symbols(self, compile_args) -> bool:
+    def probe_symbols(self, compile_args: T.List[str]) -> bool:
         """There are two common ways of building ILP64 BLAS, check which one we're dealing with"""
         if self.interface == 'lp64':
             return self.check_symbols(compile_args)
@@ -411,7 +446,7 @@ class OpenBLASMixin():
 
 
 class OpenBLASSystemDependency(BLASLAPACKMixin, OpenBLASMixin, SystemDependency):
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
@@ -441,11 +476,11 @@ class OpenBLASSystemDependency(BLASLAPACKMixin, OpenBLASMixin, SystemDependency)
             libnames = ['openblas64', 'openblas_ilp64', 'openblas']
 
         for libname in libnames:
-            link_arg = self.clib_compiler.find_library(libname, self.env, lib_dirs)
+            link_arg = self.clib_compiler.find_library(libname, lib_dirs)
             if link_arg:
                 incdir_args = [f'-I{inc_dir}' for inc_dir in inc_dirs]
                 for hdr in ['openblas_config.h', 'openblas/openblas_config.h']:
-                    found_header, _ = self.clib_compiler.has_header(hdr, '', self.env, dependencies=[self],
+                    found_header, _ = self.clib_compiler.has_header(hdr, '', dependencies=[self],
                                                                     extra_args=incdir_args)
                     if found_header:
                         self._openblas_config_header = hdr
@@ -468,7 +503,7 @@ class OpenBLASSystemDependency(BLASLAPACKMixin, OpenBLASMixin, SystemDependency)
     def detect_openblas_version(self) -> str:
         v, _ = self.clib_compiler.get_define('OPENBLAS_VERSION',
                                              f'#include <{self._openblas_config_header}>',
-                                             self.env, [], [self])
+                                             [], [self])
 
         m = re.search(r'\d+(?:\.\d+)+', v)
         if not m:
@@ -478,7 +513,7 @@ class OpenBLASSystemDependency(BLASLAPACKMixin, OpenBLASMixin, SystemDependency)
 
 
 class OpenBLASPkgConfigDependency(BLASLAPACKMixin, OpenBLASMixin, PkgConfigDependency):
-    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, env: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
         if self.interface == 'lp64' and name != 'openblas':
@@ -493,9 +528,9 @@ class OpenBLASPkgConfigDependency(BLASLAPACKMixin, OpenBLASMixin, PkgConfigDepen
 
 
 class OpenBLASCMakeDependency(BLASLAPACKMixin, OpenBLASMixin, CMakeDependency):
-    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any],
-                 language: T.Optional[str] = None, force_use_global_compilers: bool = False) -> None:
-        super().__init__('OpenBLAS', env, kwargs, language, force_use_global_compilers)
+    def __init__(self, name: str, env: 'Environment', kwargs: 'DependencyObjectKWs',
+                 force_use_global_compilers: bool = False) -> None:
+        CMakeDependency.__init__(self, 'OpenBLAS', env, kwargs, force_use_global_compilers)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
 
@@ -505,13 +540,13 @@ class OpenBLASCMakeDependency(BLASLAPACKMixin, OpenBLASMixin, CMakeDependency):
             self.is_found = False
 
 
-class NetlibMixin():
+class NetlibMixin(_BLASLAPACKMixinBase):
     def get_symbol_suffix(self) -> str:
         self._ilp64_suffix = ''  # Handle `64_` suffix, or custom suffixes?
         return '' if self.interface == 'lp64' else self._ilp64_suffix
 
-    def probe_symbols(self, compile_args, check_cblas=True, check_lapacke=True,
-                      lapack_only=False) -> bool:
+    def probe_symbols(self, compile_args: T.List[str], check_cblas: bool = True,
+                      check_lapacke: bool = True, lapack_only: bool = False) -> bool:
         """Most ILP64 BLAS builds will not use a suffix, but the new standard will be _64
         (see Reference-LAPACK/lapack#666). Check which one we're dealing with"""
         if self.interface == 'lp64':
@@ -530,7 +565,7 @@ class NetlibMixin():
 
 
 class NetlibBLASPkgConfigDependency(BLASLAPACKMixin, NetlibMixin, PkgConfigDependency):
-    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, env: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         # TODO: add ILP64 - needs factory function like for OpenBLAS
         super().__init__(name, env, kwargs)
         self.feature_since = ('1.3.0', '')
@@ -553,7 +588,7 @@ class NetlibBLASPkgConfigDependency(BLASLAPACKMixin, NetlibMixin, PkgConfigDepen
 
 
 class NetlibBLASSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency):
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
@@ -585,7 +620,7 @@ class NetlibBLASSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency)
             cblas_headers = ['cblas_64.h', 'cblas.h']
 
         for libname in libnames:
-            link_arg = self.clib_compiler.find_library(libname, self.env, lib_dirs)
+            link_arg = self.clib_compiler.find_library(libname, lib_dirs)
             if not link_arg:
                 continue
 
@@ -599,7 +634,7 @@ class NetlibBLASSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency)
             if self.needs_cblas and not cblas_in_blas:
                 # We found libblas and it does not contain CBLAS symbols, so we need libcblas
                 cblas_libname = 'c' + libname
-                link_arg_cblas = self.clib_compiler.find_library(cblas_libname, self.env, lib_dirs)
+                link_arg_cblas = self.clib_compiler.find_library(cblas_libname, lib_dirs)
                 if link_arg_cblas:
                     link_arg.extend(link_arg_cblas)
                 else:
@@ -611,7 +646,7 @@ class NetlibBLASSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency)
             if self.needs_cblas:
                 incdir_args = [f'-I{inc_dir}' for inc_dir in inc_dirs]
                 for hdr in cblas_headers:
-                    found_header, _ = self.clib_compiler.has_header(hdr, '', self.env, dependencies=[self],
+                    found_header, _ = self.clib_compiler.has_header(hdr, '', dependencies=[self],
                                                                     extra_args=incdir_args)
                     if found_header:
                         # If we don't get here, we found the library but not the header - this may
@@ -627,7 +662,7 @@ class NetlibBLASSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency)
 
 
 class NetlibLAPACKPkgConfigDependency(BLASLAPACKMixin, NetlibMixin, PkgConfigDependency):
-    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, env: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         # TODO: add ILP64 (needs factory function like for OpenBLAS)
         super().__init__(name, env, kwargs)
         self.feature_since = ('1.3.0', '')
@@ -649,7 +684,7 @@ class NetlibLAPACKPkgConfigDependency(BLASLAPACKMixin, NetlibMixin, PkgConfigDep
 
 
 class NetlibLAPACKSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependency):
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
@@ -681,7 +716,7 @@ class NetlibLAPACKSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependenc
             lapacke_headers = ['lapacke_64.h', 'lapacke.h']
 
         for libname in libnames:
-            link_arg = self.clib_compiler.find_library(libname, self.env, lib_dirs)
+            link_arg = self.clib_compiler.find_library(libname, lib_dirs)
             if not link_arg:
                 continue
 
@@ -693,7 +728,7 @@ class NetlibLAPACKSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependenc
             if self.needs_lapacke and not lapacke_in_lapack:
                 # We found liblapack and it does not contain LAPACKE symbols, so we need liblapacke
                 lapacke_libname = libname + 'e'
-                link_arg_lapacke = self.clib_compiler.find_library(lapacke_libname, self.env, lib_dirs)
+                link_arg_lapacke = self.clib_compiler.find_library(lapacke_libname, lib_dirs)
                 if link_arg_lapacke:
                     link_arg.extend(link_arg_lapacke)
                 else:
@@ -705,7 +740,7 @@ class NetlibLAPACKSystemDependency(BLASLAPACKMixin, NetlibMixin, SystemDependenc
             if self.needs_lapacke:
                 incdir_args = [f'-I{inc_dir}' for inc_dir in inc_dirs]
                 for hdr in lapacke_headers:
-                    found_header, _ = self.clib_compiler.has_header(hdr, '', self.env, dependencies=[self],
+                    found_header, _ = self.clib_compiler.has_header(hdr, '', dependencies=[self],
                                                                     extra_args=incdir_args)
                     if found_header:
                         # If we don't get here, we found the library but not the header - this may
@@ -732,7 +767,7 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         dependency('appleframeworks', modules : 'Accelerate')
 
     """
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_modules(kwargs)
@@ -749,10 +784,10 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
 
         # We also need the SDK to be >=13.3 (meaning at least XCode 14.3)
         cmd = ['xcrun', '-sdk', 'macosx', '--show-sdk-version']
-        sdk_version = subprocess.run(cmd, capture_output=True, check=True, text=True).stdout.strip()
+        sdk_version = subprocess.run(cmd, capture_output=True, check=True, encoding='utf-8').stdout.strip()
         return mesonlib.version_compare(sdk_version, '>=13.3')
 
-    def detect(self, kwargs: T.Dict[str, T.Any]) -> None:
+    def detect(self, kwargs: 'DependencyObjectKWs') -> None:
         from .framework import ExtraFrameworkDependency
         dep = ExtraFrameworkDependency('Accelerate', self.env, kwargs)
         self.is_found = dep.is_found
@@ -770,17 +805,17 @@ class AccelerateSystemDependency(BLASLAPACKMixin, SystemDependency):
         return '$NEWLAPACK' if self.interface == 'lp64' else '$NEWLAPACK$ILP64'
 
 
-class MKLMixin():
+class MKLMixin(_BLASLAPACKMixinBase):
     def get_symbol_suffix(self) -> str:
         return '' if self.interface == 'lp64' else '_64'
 
-    def parse_mkl_options(self, kwargs: T.Dict[str, T.Any]) -> None:
+    def parse_mkl_options(self, kwargs: 'DependencyObjectKWs') -> None:
         """Parse `modules` and remove threading and SDL options from it if they are present.
 
         Removing 'threading: <val>' and 'sdl' from `modules` is needed to ensure those
         don't get to the generic parse_modules() method for all BLAS/LAPACK dependencies.
         """
-        modules: T.List[str] = mesonlib.extract_as_list(kwargs, 'modules')
+        modules: T.List[str] = kwargs.get('modules', [])
         threading_module = [s for s in modules if s.startswith('threading')]
         sdl_module = [s for s in modules if s.startswith('sdl')]
 
@@ -808,11 +843,12 @@ class MKLMixin():
             if opt not in ['sdl: ' + s for s in ('true', 'false', 'auto')]:
                 raise mesonlib.MesonException(f'Invalid sdl argument: {opt}')
 
-            self.use_sdl = {
+            sdl_map: T.Dict[str, T.Union[bool, str]] = {
                 'false': False,
                 'true': True,
                 'auto': 'auto'
-            }.get(opt.split(' ')[1])
+            }
+            self.use_sdl = sdl_map[opt.split(' ')[1]]
             modules = [s for s in modules if not s == opt]
             kwargs['modules'] = modules
 
@@ -847,7 +883,7 @@ class MKLPkgConfigDependency(BLASLAPACKMixin, MKLMixin, PkgConfigDependency):
     Note that there is also an MKLPkgConfig dependency in scalapack.py, which
     has more manual fixes.
     """
-    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, env: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         self.feature_since = ('1.3.0', '')
         self.parse_mkl_options(kwargs)
         if self.use_sdl == 'auto':
@@ -867,7 +903,7 @@ class MKLPkgConfigDependency(BLASLAPACKMixin, MKLMixin, PkgConfigDependency):
 
 class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
     """This only detects MKL's Single Dynamic Library (SDL)"""
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: 'DependencyObjectKWs') -> None:
         super().__init__(name, environment, kwargs)
         self.feature_since = ('1.3.0', '')
         self.parse_mkl_options(kwargs)
@@ -882,8 +918,8 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
         # Use MKLROOT in addition to standard libdir(s)
         _m = os.environ.get('MKLROOT')
         mklroot = Path(_m).resolve() if _m else None
-        lib_dirs = []
-        inc_dirs = []
+        lib_dirs: T.List[str] = []
+        inc_dirs: T.List[str] = []
         if mklroot is not None:
             libdir = mklroot / 'lib' / 'intel64'
             if not libdir.exists():
@@ -892,15 +928,15 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
                 # part, libraries go straight into <prefix>/lib
                 libdir = mklroot / 'lib'
             incdir = mklroot / 'include'
-            lib_dirs += [libdir]
-            inc_dirs += [incdir]
+            lib_dirs += [str(libdir)]
+            inc_dirs += [str(incdir)]
             if not libdir.exists() or not incdir.exists():
                 mlog.warning(f'MKLROOT env var set to {mklroot}, but not pointing to an MKL install')
 
-        link_arg = self.clib_compiler.find_library('mkl_rt', self.env, lib_dirs)
+        link_arg = self.clib_compiler.find_library('mkl_rt', lib_dirs)
         if link_arg:
             incdir_args = [f'-I{inc_dir}' for inc_dir in inc_dirs]
-            found_header, _ = self.clib_compiler.has_header('mkl_version.h', '', self.env,
+            found_header, _ = self.clib_compiler.has_header('mkl_version.h', '',
                                                             dependencies=[self], extra_args=incdir_args)
         if link_arg and found_header:
             self.is_found = True
@@ -912,9 +948,8 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
             # Determine MKL version
             ver, _ = self.clib_compiler.get_define('INTEL_MKL_VERSION',
                                                    '#include "mkl_version.h"',
-                                                   self.env,
-                                                   dependencies=[self],
-                                                   extra_args=incdir_args)
+                                                   extra_args=incdir_args,
+                                                   dependencies=[self])
             if len(ver) == 8:
                 year = ver[:4]
                 minor = str(int(ver[4:6]))
@@ -927,23 +962,23 @@ class MKLSystemDependency(BLASLAPACKMixin, MKLMixin, SystemDependency):
 
 
 @factory_methods({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM, DependencyMethods.CMAKE})
-def openblas_factory(env: 'Environment', for_machine: 'MachineChoice',
-                     kwargs: T.Dict[str, T.Any],
+def openblas_factory(env: 'Environment',
+                     kwargs: 'DependencyObjectKWs',
                      methods: T.List[DependencyMethods]) -> T.List['DependencyGenerator']:
     candidates: T.List['DependencyGenerator'] = []
 
     if DependencyMethods.PKGCONFIG in methods:
         for pkg in ['openblas64', 'openblas_ilp64', 'openblas']:
-            candidates.append(functools.partial(
-                OpenBLASPkgConfigDependency, pkg, env, kwargs))
+            candidates.append(DependencyCandidate.from_dependency(
+                pkg, OpenBLASPkgConfigDependency, (env, kwargs)))
 
     if DependencyMethods.SYSTEM in methods:
-        candidates.append(functools.partial(
-            OpenBLASSystemDependency, 'openblas', env, kwargs))
+        candidates.append(DependencyCandidate.from_dependency(
+            'openblas', OpenBLASSystemDependency, (env, kwargs)))
 
     if DependencyMethods.CMAKE in methods:
-        candidates.append(functools.partial(
-            OpenBLASCMakeDependency, 'OpenBLAS', env, kwargs))
+        candidates.append(DependencyCandidate.from_dependency(
+            'OpenBLAS', OpenBLASCMakeDependency, (env, kwargs)))
 
     return candidates
 
@@ -953,28 +988,28 @@ packages['openblas'] = openblas_factory
 packages['blas'] = netlib_factory = DependencyFactory(
     'blas',
     [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM],
-    pkgconfig_class=NetlibBLASPkgConfigDependency,
-    system_class=NetlibBLASSystemDependency,
+    pkgconfig=NetlibBLASPkgConfigDependency,
+    system=NetlibBLASSystemDependency,
 )
 
 packages['lapack'] = netlib_factory = DependencyFactory(
     'lapack',
     [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM],
-    pkgconfig_class=NetlibLAPACKPkgConfigDependency,
-    system_class=NetlibLAPACKSystemDependency,
+    pkgconfig=NetlibLAPACKPkgConfigDependency,
+    system=NetlibLAPACKSystemDependency,
 )
 
 
 packages['accelerate'] = accelerate_factory = DependencyFactory(
     'accelerate',
     [DependencyMethods.SYSTEM],
-    system_class=AccelerateSystemDependency,
+    system=AccelerateSystemDependency,
 )
 
 
 packages['mkl'] = mkl_factory = DependencyFactory(
     'mkl',
     [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM],
-    pkgconfig_class=MKLPkgConfigDependency,
-    system_class=MKLSystemDependency,
+    pkgconfig=MKLPkgConfigDependency,
+    system=MKLSystemDependency,
 )
