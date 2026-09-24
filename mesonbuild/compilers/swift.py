@@ -9,7 +9,7 @@ import typing as T
 
 from .. import mlog, options
 from ..mesonlib import first, MesonException, version_compare
-from .compilers import Compiler, clike_debug_args
+from .compilers import Compiler, clike_debug_args, PrefixArgumentLinkerOptionStyle
 
 if T.TYPE_CHECKING:
     from .. import build
@@ -32,7 +32,7 @@ swift_optimization_args: T.Dict[str, T.List[str]] = {
 
 class SwiftCompiler(Compiler):
 
-    LINKER_PREFIX = ['-Xlinker']
+    LINKER_OPTION_STYLE = PrefixArgumentLinkerOptionStyle('-Xlinker')
     language = 'swift'
     id = 'llvm'
 
@@ -184,7 +184,7 @@ class SwiftCompiler(Compiler):
         if self.is_cross:
             args.extend(self.get_compile_only_args())
         else:
-            largs.extend(self.environment.coredata.get_external_link_args(self.for_machine, self.language))
+            largs.extend(self.get_external_link_args())
         args.extend(self.get_output_args(binname))
         args.append(sourcename)
 

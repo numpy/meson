@@ -203,4 +203,3 @@ as dependencies.
 now has an `implicit_include_directories` keyword argument to automatically
 add current build and source directories to the included paths when compiling
 a resource.
-

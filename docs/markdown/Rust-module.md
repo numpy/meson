@@ -143,6 +143,45 @@ were never turned on by Meson.
 bindgen_clang_arguments = ['--target', 'x86_64-linux-gnu']
 ```
 
+## cbindgen()
+
+*Since 1.12.0*
+
+```meson
+file_h = rustmod.cbindgen('infile.rs', 'outfile.h', config : 'cbindgen.toml')
+```
+
+This function wraps cbindgen to simplify creating C bindings for Rust targets.
+It has several advantages over invoking a `custom_target` directly:
+
+  - Correctly handles depfiles, adding them when supported
+  - Sets the profile to `debug` when Meson is configured with -Ddebug=true
+  - Automatically passes some useful options for use in Meson, such as `--quiet`
+    and `--cpp-compat`
+  - Handles structured_sources correctly
+  - Automatically detect language based on file extension (c or c++ only),
+
+The majority of the configuration should be handled inside the `config.toml`
+file.
+
+It takes the following positional arguments:
+
+  - `infile`: the root rust file to bind, or a [[@structured_src]] instance
+  - `outfile`: the header to generate
+
+It takes the following keyword arguments
+
+  - `config`: The Path to a configuration toml. May be a File, str, or CustomTarget.
+    Customarily, this is called `cbindgen.toml`, but Meson does not require this.
+  - `language`: The language to bind for. If unset, Meson will choose a language
+    based on the file extension of the output file. Currently, auto detection only
+    works for C and C++. May be one of: `c`, `cpp`, `cython`.
+  - `depends`: An array of CustomTargets that this target depends on
+  - `depend_files`: An array of files that this target depends on
+  - `install`: A boolean controlling whether to install the generated header
+  - `install_dir`: Where to install the header. This is required if `install` is true.
+
+
 ### compiler_target()
 
 *Since 1.11.0*
@@ -228,6 +267,8 @@ workspace.
 Keyword arguments:
 - `default_features`: (`bool`, optional) Whether to enable default features.
 - `features`: (`array[str]`, optional) List of additional features to enable globally.
+- `extra_members`: (`array[str]`, optional) *Since 1.12.0* list of non-default
+  workspace members to configure.
 
 A project that wishes to use Cargo subprojects should have `Cargo.lock` and `Cargo.toml`
 files in the root source directory, and should call this function before using
@@ -271,12 +312,14 @@ say "require this specific configuration," which may conflict with the parent pr
 packages = ws.packages()
 ```
 
-Returns a list of package names in the workspace.
+Returns a list of configured package names in the workspace.  Non-default
+workspace members are not included unless they were passed as `extra_members`
+when the workspace was created.
 
 ### workspace.package()
 
 ```meson
-pkg = ws.package([package_name])
+pkg = ws.package([package_name], ...)
 ```
 
 Returns a package object for the given package member.  If empty, returns
@@ -285,6 +328,11 @@ the object for the root package.
 Arguments:
 - `package_name`: (str, optional) Name of the package; not needed for the
   root package of a workspace
+
+Keyword arguments:
+- `native`: (`bool`) Whether the package is compiled for the
+host machine (false) or the build machine (true).  The argument is
+forwarded to Meson by methods such as `executable`, `library`, etc.
 
 Example usage:
 ```meson
@@ -297,7 +345,7 @@ pkg.executable(install: true)
 ### workspace.subproject()
 
 ```meson
-package = ws.subproject(package_name, api)
+package = ws.subproject(package_name, api, ...)
 ```
 
 Returns a `package` object for managing a specific package within the workspace.
@@ -305,6 +353,11 @@ Returns a `package` object for managing a specific package within the workspace.
 Positional arguments:
 - `package_name`: (`str`) The name of the package to retrieve
 - `api`: (`str`, optional) The version constraints for the package in Cargo format
+
+Keyword arguments:
+- `native`: (`bool`) Whether the subproject is compiled for the
+host machine (false) or the build machine (true).  Default is false
+(proc-macro crates are only built once).
 
 ## Package object
 

@@ -114,7 +114,7 @@ class RustSystemDependency(InternalDependency):
 
 class RustCompiler(Compiler):
 
-    # rustc doesn't invoke the compiler itself, it doesn't need a LINKER_PREFIX
+    # rustc doesn't invoke the compiler itself, it doesn't need a LINKER_OPTION_STYLE
     language = 'rust'
     id = 'rustc'
 
@@ -165,13 +165,9 @@ class RustCompiler(Compiler):
 
     def _sanity_check_compile_args(self, sourcename: str, binname: str
                                    ) -> T.Tuple[T.List[str], T.List[str]]:
-        cmdlist = self.exelist.copy()
-        largs: T.List[str] = []
-        assert self.linker is not None, 'for mypy'
-        if self.info.kernel == 'none' and 'ld.' in self.linker.id:
+        cmdlist, largs = super()._sanity_check_compile_args(sourcename, binname)
+        if self.info.kernel == 'none' and 'ld.' in self.get_linker_id():
             largs.extend(rustc_link_args(['-nostartfiles']))
-        cmdlist.extend(self.get_output_args(binname))
-        cmdlist.append(sourcename)
         return cmdlist, largs
 
     def _sanity_check_source_code(self) -> str:
@@ -394,22 +390,25 @@ class RustCompiler(Compiler):
             args.append('--edition=' + std)
         return args
 
-    def get_crt_compile_args(self, crt_val: str, env: Environment) -> T.List[str]:
+    def get_crt_compile_args(self, crt_val: str) -> T.List[str]:
         # Rust handles this for us, we don't need to do anything
         return []
 
-    def get_crt_link_args(self, crt_val: str, env: Environment) -> T.List[str]:
+    def get_crt_link_args(self, crt_val: str) -> T.List[str]:
         if not isinstance(self.linker, VisualStudioLikeLinkerMixin):
             return []
         # Rustc always use non-debug Windows runtime. Inject the one selected
         # by Meson options instead.
         # https://github.com/rust-lang/rust/issues/39016
-        return self.MSVCRT_ARGS[self.get_crt_val(crt_val, env)]
+        return self.MSVCRT_ARGS[self.get_crt_val(crt_val)]
 
     def get_colorout_args(self, colortype: str) -> T.List[str]:
         if colortype in {'always', 'never', 'auto'}:
             return [f'--color={colortype}']
         raise MesonException(f'Invalid color type for rust {colortype}')
+
+    def get_external_link_args(self) -> T.List[str]:
+        return rustc_link_args(super().get_external_link_args())
 
     @functools.lru_cache(maxsize=None)
     def get_linker_always_args(self) -> T.List[str]:
@@ -469,6 +468,10 @@ class RustCompiler(Compiler):
     @functools.lru_cache(maxsize=None)
     def headerpad_args(self) -> T.List[str]:
         return rustc_link_args(super().headerpad_args())
+
+    @functools.lru_cache(maxsize=None)
+    def get_linker_fatal_warnings(self) -> T.List[str]:
+        return rustc_link_args(super().get_linker_fatal_warnings())
 
     @functools.lru_cache(maxsize=None)
     def get_allow_undefined_link_args(self) -> T.List[str]:
@@ -563,15 +566,6 @@ class RustCompiler(Compiler):
                                    self.environment,
                                    full_version=self.full_version,
                                    linker=self.linker, rustc=self)
-
-    def enable_env_set_args(self) -> T.Optional[T.List[str]]:
-        '''Extra arguments to enable --env-set support in rustc.
-        Returns None if not supported.
-        '''
-        if version_compare(self.version, '>= 1.76') and self.allow_nightly:
-            return ['-Z', 'unstable-options']
-        return None
-
 
 class ClippyRustCompiler(RustCompiler):
 

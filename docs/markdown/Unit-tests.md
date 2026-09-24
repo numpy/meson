@@ -216,6 +216,32 @@ into `n` slices and execute the `ith` such slice. This allows you to distribute
 a set of long-running tests across multiple machines to decrease the overall
 runtime of tests.
 
+Since version *1.12.0*, you can pass `--exclude NAME` to skip processing
+of named tests:
+```console
+$ meson test --list
+m:basic
+m:buggy
+
+$ meson test
+...
+1/2 m:basic        OK              0.01s
+2/2 m:buggy        FAIL            0.00s ...
+
+Ok:                1
+Fail:              1
+
+$ meson test --exclude buggy
+...
+1/1 m:basic        OK              0.00s
+
+Ok:                1
+Fail:              0
+```
+
+For unqualified names (no subproject specified), `--exclude NAME` matches
+the main project.
+
 ### Other test options
 
 Sometimes you need to run the tests multiple times, which is done like this:

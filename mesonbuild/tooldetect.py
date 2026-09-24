@@ -78,11 +78,13 @@ def compute_llvm_suffix(coredata: coredata.CoreData) -> T.Optional[str]:
     # Neither compiler is a Clang, or no compilers are for C or C++
     return None
 
-def detect_lcov_genhtml(lcov_exe: str = 'lcov', genhtml_exe: str = 'genhtml') \
-        -> T.Tuple[str, T.Optional[str], str]:
-    lcov_exe, lcov_version = detect_lcov(lcov_exe)
-    if shutil.which(genhtml_exe) is None:
+def detect_lcov_genhtml(lcov_exe_: str = 'lcov', genhtml_exe_: str = 'genhtml') \
+        -> tuple[str | None, str | None, str | None]:
+    lcov_exe, lcov_version = detect_lcov(lcov_exe_)
+    if shutil.which(genhtml_exe_) is None:
         genhtml_exe = None
+    else:
+        genhtml_exe = genhtml_exe_
 
     return lcov_exe, lcov_version, genhtml_exe
 
@@ -138,6 +140,8 @@ def get_llvm_tool_names(tool: str) -> T.List[str]:
     # unless it becomes a stable release.
     suffixes = [
         '', # base (no suffix)
+        '-23.1', '23.1',
+        '-23', '23',
         '-22.1', '22.1',
         '-22', '22',
         '-21.1', '21.1',
@@ -202,9 +206,9 @@ def detect_scanbuild() -> T.List[str]:
                 break
 
     if exelist:
-        tool = exelist[0]
-        if os.path.isfile(tool) and os.access(tool, os.X_OK):
-            return [tool]
+        tool = shutil.which(exelist[0])
+        if tool is not None:
+            return [tool] + exelist[1:]
     return []
 
 def detect_clangformat() -> T.List[str]:
