@@ -14,10 +14,11 @@ from .compilers import (
     clike_debug_args,
     Compiler,
     CompileCheckMode,
+    ManyInOneLinkerOptionStyle,
 )
 from .mixins.clike import CLikeCompiler
 from .mixins.gnu import GnuCompiler,  gnu_optimization_args
-from .mixins.intel import IntelGnuLikeCompiler, IntelVisualStudioLikeCompiler
+from .mixins.intel import IntelGnuLikeCompiler, IntelLLVMLikeCompiler, IntelVisualStudioLikeCompiler
 from .mixins.clang import ClangCompiler
 from .mixins.elbrus import ElbrusCompiler
 from .mixins.pgi import PGICompiler
@@ -56,8 +57,8 @@ class FortranCompiler(CLikeCompiler, Compiler):
                              'that example is to see if the compiler has Fortran 2008 Block element.')
 
     def _get_basic_compiler_args(self, mode: CompileCheckMode) -> T.Tuple[T.List[str], T.List[str]]:
-        cargs = self.environment.coredata.get_external_args(self.for_machine, self.language)
-        largs = self.environment.coredata.get_external_link_args(self.for_machine, self.language)
+        cargs = self.get_external_compile_args()
+        largs = self.get_external_link_args()
         return cargs, largs
 
     def _sanity_check_source_code(self) -> str:
@@ -351,7 +352,7 @@ class ElbrusFortranCompiler(ElbrusCompiler, FortranCompiler):
 
 class G95FortranCompiler(FortranCompiler):
 
-    LINKER_PREFIX = '-Wl,'
+    LINKER_OPTION_STYLE = ManyInOneLinkerOptionStyle('-Wl,', ',')
     id = 'g95'
 
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
@@ -372,7 +373,7 @@ class G95FortranCompiler(FortranCompiler):
 
 class SunFortranCompiler(FortranCompiler):
 
-    LINKER_PREFIX = '-Wl,'
+    LINKER_OPTION_STYLE = ManyInOneLinkerOptionStyle('-Wl,', ',')
     id = 'sun'
 
     def get_dependency_gen_args(self, outtarget: str, outfile: str) -> T.List[str]:
@@ -442,7 +443,7 @@ class IntelFortranCompiler(IntelGnuLikeCompiler, FortranCompiler):
         return ['-gen-dep=' + outtarget, '-gen-depformat=make']
 
 
-class IntelLLVMFortranCompiler(IntelFortranCompiler):
+class IntelLLVMFortranCompiler(IntelLLVMLikeCompiler, IntelFortranCompiler):
 
     id = 'intel-llvm'
 

@@ -12,80 +12,8 @@ import typing as T
 
 from mesonbuild.mesonlib import version_compare
 
-modules = [
-    # fully typed submodules
-    'mesonbuild/ast/',
-    'mesonbuild/cargo/',
-    'mesonbuild/cmake/',
-    'mesonbuild/compilers/',
-    'mesonbuild/dependencies/',
-    'mesonbuild/interpreter/primitives/',
-    'mesonbuild/interpreterbase/',
-    'mesonbuild/linkers/',
-    'mesonbuild/scripts/',
-    'mesonbuild/templates/',
-    'mesonbuild/utils/',
-    'mesonbuild/wrap/',
+MESONBUILD = 'mesonbuild/'
 
-    # specific files
-    'mesonbuild/arglist.py',
-    'mesonbuild/backend/backends.py',
-    'mesonbuild/backend/nonebackend.py',
-    'mesonbuild/cmdline.py',
-    'mesonbuild/coredata.py',
-    'mesonbuild/depfile.py',
-    'mesonbuild/envconfig.py',
-    'mesonbuild/environment.py',
-    'mesonbuild/interpreter/compiler.py',
-    'mesonbuild/interpreter/dependencyfallbacks.py',
-    'mesonbuild/interpreter/mesonmain.py',
-    'mesonbuild/interpreter/interpreterobjects.py',
-    'mesonbuild/interpreter/type_checking.py',
-    'mesonbuild/machinefile.py',
-    'mesonbuild/mesondata.py',
-    'mesonbuild/mcompile.py',
-    'mesonbuild/mdevenv.py',
-    'mesonbuild/mconf.py',
-    'mesonbuild/mdist.py',
-    'mesonbuild/mformat.py',
-    'mesonbuild/minit.py',
-    'mesonbuild/minstall.py',
-    'mesonbuild/mintro.py',
-    'mesonbuild/mlog.py',
-    'mesonbuild/msubprojects.py',
-    'mesonbuild/modules/__init__.py',
-    'mesonbuild/modules/cmake.py',
-    'mesonbuild/modules/codegen.py',
-    'mesonbuild/modules/cuda.py',
-    'mesonbuild/modules/dlang.py',
-    'mesonbuild/modules/external_project.py',
-    'mesonbuild/modules/fs.py',
-    'mesonbuild/modules/gnome.py',
-    'mesonbuild/modules/i18n.py',
-    'mesonbuild/modules/icestorm.py',
-    'mesonbuild/modules/java.py',
-    'mesonbuild/modules/keyval.py',
-    'mesonbuild/modules/modtest.py',
-    'mesonbuild/modules/pkgconfig.py',
-    'mesonbuild/modules/_qt.py',
-    'mesonbuild/modules/qt4.py',
-    'mesonbuild/modules/qt5.py',
-    'mesonbuild/modules/qt6.py',
-    'mesonbuild/modules/rust.py',
-    'mesonbuild/modules/simd.py',
-    'mesonbuild/modules/snippets.py',
-    'mesonbuild/modules/sourceset.py',
-    'mesonbuild/modules/wayland.py',
-    'mesonbuild/modules/windows.py',
-    'mesonbuild/mparser.py',
-    'mesonbuild/msetup.py',
-    'mesonbuild/mtest.py',
-    'mesonbuild/optinterpreter.py',
-    'mesonbuild/options.py',
-    'mesonbuild/programs.py',
-    'mesonbuild/rewriter.py',
-    'mesonbuild/tooldetect.py',
-]
 additional = [
     'run_mypy.py',
     'run_project_tests.py',
@@ -132,9 +60,7 @@ def main() -> int:
     additional_to_check = [] # type: T.List[str]
     if opts.files:
         for f in opts.files:
-            if f in modules:
-                to_check.append(f)
-            elif any(f.startswith(i) for i in modules):
+            if f.startswith(MESONBUILD):
                 to_check.append(f)
             elif f in additional:
                 additional_to_check.append(f)
@@ -144,7 +70,7 @@ def main() -> int:
                 if not opts.quiet:
                     print(f'skipping {f!r} because it is not yet typed')
     else:
-        to_check.extend(modules)
+        to_check.append(MESONBUILD)
         additional_to_check.extend(additional)
 
     if not to_check:
@@ -157,7 +83,7 @@ def main() -> int:
         print('Running mypy (this can take some time) ...')
 
     if opts.allver:
-        versions = ['default'] + [f'3.{minor}' for minor in range(7, sys.version_info[1])]
+        versions = ['default'] + [f'3.{minor}' for minor in range(10, sys.version_info[1])]
     else:
         versions = ['default']
 

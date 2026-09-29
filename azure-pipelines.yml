@@ -80,11 +80,11 @@ jobs:
   - bash: ci/intel-scripts/cache_exclude_windows.sh
     displayName: exclude unused files from cache
     condition: and(ne(variables.CACHE_RESTORED, 'true'), eq(variables.ifort, 'true'))
-  - script: choco install -y nasm
-    displayName: install NASM
+  - script: choco install -y nasm winflexbison3
+    displayName: install Chocolatey Dependencies
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.7'
+      versionSpec: '3.10'
       addToPath: true
       architecture: 'x64'
   - task: BatchScript@1

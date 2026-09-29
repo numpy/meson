@@ -10,7 +10,7 @@ import typing as T
 
 from .. import options
 from ..mesonlib import is_windows, LibType, version_compare
-from .compilers import Compiler, CompileCheckMode, CrossNoRunException
+from .compilers import Compiler, CompileCheckMode, CrossNoRunException, SimplePrefixLinkerOptionStyle
 
 if T.TYPE_CHECKING:
     from ..build import BuildTarget
@@ -45,7 +45,7 @@ class Phase(enum.Enum):
 
 class CudaCompiler(Compiler):
 
-    LINKER_PREFIX = '-Xlinker='
+    LINKER_OPTION_STYLE = SimplePrefixLinkerOptionStyle('-Xlinker=')
     language = 'cuda'
 
     # NVCC flags taking no arguments.
@@ -528,6 +528,16 @@ class CudaCompiler(Compiler):
             }
             '''
 
+    def _sanity_check_mode(self) -> CompileCheckMode:
+        # Linking cross built apps is painful. You can't really
+        # tell if you should use -nostdlib or not and for example
+        # on OSX the compiler binary is the same but you need
+        # a ton of compiler flags to differentiate between
+        # arm and x86_64. So just compile.
+        if self.is_cross and not self.environment.has_exe_wrapper():
+            return CompileCheckMode.COMPILE
+        return CompileCheckMode.LINK
+
     def _sanity_check_compile_args(self, sourcename: str, binname: str
                                    ) -> T.Tuple[T.List[str], T.List[str]]:
         # Disable warnings, compile with statically-linked runtime for minimum
@@ -540,12 +550,8 @@ class CudaCompiler(Compiler):
         flags += self._get_ccbin_args(None, '')
 
         # If cross-compiling, we can't run the sanity check, only compile it.
-        if self.is_cross and not self.environment.has_exe_wrapper():
-            # Linking cross built apps is painful. You can't really
-            # tell if you should use -nostdlib or not and for example
-            # on OSX the compiler binary is the same but you need
-            # a ton of compiler flags to differentiate between
-            # arm and x86_64. So just compile.
+        mode = self._sanity_check_mode()
+        if mode is CompileCheckMode.COMPILE:
             flags += self.get_compile_only_args()
         flags += self.get_output_args(binname)
 
@@ -688,6 +694,9 @@ class CudaCompiler(Compiler):
     def get_optimization_link_args(self, optimization_level: str) -> T.List[str]:
         return self._to_host_flags(self.host_compiler.get_optimization_link_args(optimization_level), Phase.LINKER)
 
+    def get_linker_fatal_warnings(self) -> T.List[str]:
+        return self._to_host_flags(self.host_compiler.get_linker_fatal_warnings(), Phase.LINKER)
+
     def build_rpath_args(self, build_dir: str, from_dir: str, target: BuildTarget,
                          extra_paths: T.Optional[T.List[str]] = None
                          ) -> T.Tuple[T.List[str], T.Set[bytes]]:
@@ -725,17 +734,17 @@ class CudaCompiler(Compiler):
                      skip_link_check: bool = False) -> T.Optional[T.List[str]]:
         return self.host_compiler.find_library(libname, extra_dirs, libtype, lib_prefix_warning, ignore_system_dirs, skip_link_check)
 
-    def get_crt_compile_args(self, crt_val: str, env: Environment) -> T.List[str]:
-        return self._to_host_flags(self.host_compiler.get_crt_compile_args(crt_val, env))
+    def get_crt_compile_args(self, crt_val: str) -> T.List[str]:
+        return self._to_host_flags(self.host_compiler.get_crt_compile_args(crt_val))
 
-    def get_crt_link_args(self, crt_val: str, env: Environment) -> T.List[str]:
+    def get_crt_link_args(self, crt_val: str) -> T.List[str]:
         # nvcc defaults to static, release version of msvc runtime and provides no
         # native option to override it; override it with /NODEFAULTLIB
         host_link_arg_overrides = []
-        host_crt_compile_args = self.host_compiler.get_crt_compile_args(crt_val, env)
+        host_crt_compile_args = self.host_compiler.get_crt_compile_args(crt_val)
         if any(arg in {'/MDd', '/MD', '/MTd'} for arg in host_crt_compile_args):
             host_link_arg_overrides += ['/NODEFAULTLIB:LIBCMT.lib']
-        return self._to_host_flags(host_link_arg_overrides + self.host_compiler.get_crt_link_args(crt_val, env), Phase.LINKER)
+        return self._to_host_flags(host_link_arg_overrides + self.host_compiler.get_crt_link_args(crt_val), Phase.LINKER)
 
     def get_target_link_args(self, target: 'BuildTarget') -> T.List[str]:
         return self._to_host_flags(super().get_target_link_args(target), Phase.LINKER)

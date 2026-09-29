@@ -43,15 +43,9 @@ kwargs:
     description: precompiled header file to use for the given language
 
   <lang>_args:
-    type: array[str]
-    description: |
-      compiler flags to use for the given language;
-      eg: `cpp_args` for C++
-
-  vala_args:
     type: array[str | file]
     description: |
-      Compiler flags for Vala. Unlike other languages this may contain Files
+      compiler flags to use for the given language; eg: `cpp_args` for C++
 
   sources:
     type: str | file | custom_tgt | custom_idx | generated_list | structured_src
@@ -169,8 +163,9 @@ kwargs:
   include_directories:
     type: array[inc | str]
     description: |
-      one or more objects created with the [[include_directories]] function,
-      or *(since 0.50.0)* strings, which will be transparently expanded to include directory objects
+      one or more objects created with the [[include_directories]] function, or
+      *(since 0.50.0)* strings, which will be implicitly convert to [[@inc]]
+      objects
 
   install:
     type: bool
@@ -228,7 +223,7 @@ kwargs:
       object files had to be placed in `sources`.
 
   name_prefix:
-    type: str | array[void]
+    type: str
     description: |
       The string that will be used as the prefix for the
       target output filename by overriding the default (only used for
@@ -236,10 +231,11 @@ kwargs:
       except for MSVC shared libraries where it is omitted to follow
       convention, and Cygwin shared libraries where it is `cyg`.
 
-      Set this to `[]`, or omit the keyword argument for the default behaviour.
+      To conditionally keep the default behavior use a [[default]] object.
+      For Meson < 1.12, use `[]`.
 
   name_suffix:
-    type: str | array[void]
+    type: str
     description: |
       The string that will be used as the extension for the
       target by overriding the default. By default on Windows this is
@@ -252,7 +248,8 @@ kwargs:
       potential name clash with shared libraries which also generate
       import libraries with a `lib` suffix.
 
-      Set this to `[]`, or omit the keyword argument for the default behaviour.
+      To conditionally keep the default behavior use a [[default]] object.
+      For Meson < 1.12, use `[]`.
 
   override_options:
     type: array[str] | dict[str | bool | int | array[str]]
@@ -282,7 +279,8 @@ kwargs:
     since: 0.62.0
     description: |
       the directories to add to the string search path (i.e. `-J` switch for DMD).
-      Must be [[@inc]] objects or plain strings.
+      Must be objects created with the [[include_directories]] function or plain
+      strings, which will be implicitly converted into [[@inc]] objects.
 
   d_unittest:
     type: bool
